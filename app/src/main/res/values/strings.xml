@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Glasses Reader</string>
+    <string name="screen_text_service_description">Capture on-screen text changes and share with GlassesReader overlay.</string>
+</resources>
