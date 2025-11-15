@@ -1,5 +1,6 @@
 package com.app.glassesreader.sdk
 
+import android.content.Context
 import android.util.Log
 import org.json.JSONObject
 import com.rokid.cxr.client.extend.CxrApi
@@ -13,21 +14,145 @@ object CxrCustomViewManager {
 
     private const val TAG = "CxrCustomViewManager"
     private const val TEXT_VIEW_ID = "tv_content"
-    private const val DEFAULT_EMPTY_TEXT = "等待取样..."
+    private const val DEFAULT_EMPTY_TEXT = "连接已暂停..."
+    private const val PREFS_NAME = "glasses_reader_prefs"
+    private const val KEY_TEXT_SIZE = "text_size"
+    private const val KEY_REMOVE_EMPTY_LINES = "remove_empty_lines"
+    private const val KEY_REMOVE_LINE_BREAKS = "remove_line_breaks"
+    private const val KEY_REMOVE_FIRST_LINE = "remove_first_line"
+    private const val KEY_REMOVE_LAST_LINE = "remove_last_line"
+    private const val KEY_REMOVE_FIRST_LINE_COUNT = "remove_first_line_count"
+    private const val KEY_REMOVE_LAST_LINE_COUNT = "remove_last_line_count"
+    private const val DEFAULT_TEXT_SIZE = 18f // 默认字体大小（sp）
+    private const val DEFAULT_LINE_COUNT = 1 // 默认删除行数
 
-    private val baseLayoutJson: String by lazy {
-        """
+    private var textSize: Float = DEFAULT_TEXT_SIZE
+    private var removeEmptyLines: Boolean = false
+    private var removeLineBreaks: Boolean = false
+    private var removeFirstLine: Boolean = false
+    private var removeLastLine: Boolean = false
+    private var removeFirstLineCount: Int = DEFAULT_LINE_COUNT
+    private var removeLastLineCount: Int = DEFAULT_LINE_COUNT
+    private var context: Context? = null
+
+    /**
+     * 初始化，设置 Context 并加载保存的设置
+     */
+    fun init(context: Context) {
+        this.context = context.applicationContext
+        loadSettings()
+    }
+
+    /**
+     * 设置字体大小
+     */
+    fun setTextSize(size: Float) {
+        textSize = size.coerceIn(12f, 48f) // 限制在 12-48 sp 之间
+        saveTextSize()
+        // 如果视图已打开，立即更新字体大小
+        if (viewReady) {
+            updateTextSize()
+        }
+    }
+
+    /**
+     * 获取当前字体大小
+     */
+    fun getTextSize(): Float = textSize
+
+    /**
+     * 设置文本处理选项
+     */
+    fun setTextProcessingOptions(
+        removeEmptyLines: Boolean = this.removeEmptyLines,
+        removeLineBreaks: Boolean = this.removeLineBreaks,
+        removeFirstLine: Boolean = this.removeFirstLine,
+        removeLastLine: Boolean = this.removeLastLine,
+        removeFirstLineCount: Int = this.removeFirstLineCount,
+        removeLastLineCount: Int = this.removeLastLineCount
+    ) {
+        this.removeEmptyLines = removeEmptyLines
+        this.removeLineBreaks = removeLineBreaks
+        this.removeFirstLine = removeFirstLine
+        this.removeLastLine = removeLastLine
+        this.removeFirstLineCount = removeFirstLineCount.coerceIn(1, 100) // 限制在 1-100 行之间
+        this.removeLastLineCount = removeLastLineCount.coerceIn(1, 100)
+        saveSettings()
+        // 如果视图已打开，重新处理并更新文本
+        if (viewReady && latestRawText != DEFAULT_EMPTY_TEXT) {
+            val sanitized = sanitizeText(latestRawText)
+            val processedText = processText(sanitized)
+            sendTextToView(processedText)
+        }
+    }
+
+    /**
+     * 获取文本处理选项
+     */
+    fun getTextProcessingOptions(): TextProcessingOptions {
+        return TextProcessingOptions(
+            removeEmptyLines = removeEmptyLines,
+            removeLineBreaks = removeLineBreaks,
+            removeFirstLine = removeFirstLine,
+            removeLastLine = removeLastLine,
+            removeFirstLineCount = removeFirstLineCount,
+            removeLastLineCount = removeLastLineCount
+        )
+    }
+
+    data class TextProcessingOptions(
+        val removeEmptyLines: Boolean,
+        val removeLineBreaks: Boolean,
+        val removeFirstLine: Boolean,
+        val removeLastLine: Boolean,
+        val removeFirstLineCount: Int,
+        val removeLastLineCount: Int
+    )
+
+    private fun loadSettings() {
+        context?.let { ctx ->
+            val prefs = ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            textSize = prefs.getFloat(KEY_TEXT_SIZE, DEFAULT_TEXT_SIZE)
+            removeEmptyLines = prefs.getBoolean(KEY_REMOVE_EMPTY_LINES, false)
+            removeLineBreaks = prefs.getBoolean(KEY_REMOVE_LINE_BREAKS, false)
+            removeFirstLine = prefs.getBoolean(KEY_REMOVE_FIRST_LINE, false)
+            removeLastLine = prefs.getBoolean(KEY_REMOVE_LAST_LINE, false)
+            removeFirstLineCount = prefs.getInt(KEY_REMOVE_FIRST_LINE_COUNT, DEFAULT_LINE_COUNT)
+            removeLastLineCount = prefs.getInt(KEY_REMOVE_LAST_LINE_COUNT, DEFAULT_LINE_COUNT)
+        }
+    }
+
+    private fun saveSettings() {
+        context?.let { ctx ->
+            val prefs = ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            prefs.edit()
+                .putFloat(KEY_TEXT_SIZE, textSize)
+                .putBoolean(KEY_REMOVE_EMPTY_LINES, removeEmptyLines)
+                .putBoolean(KEY_REMOVE_LINE_BREAKS, removeLineBreaks)
+                .putBoolean(KEY_REMOVE_FIRST_LINE, removeFirstLine)
+                .putBoolean(KEY_REMOVE_LAST_LINE, removeLastLine)
+                .putInt(KEY_REMOVE_FIRST_LINE_COUNT, removeFirstLineCount)
+                .putInt(KEY_REMOVE_LAST_LINE_COUNT, removeLastLineCount)
+                .apply()
+        }
+    }
+
+    private fun saveTextSize() {
+        context?.let { ctx ->
+            val prefs = ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            prefs.edit().putFloat(KEY_TEXT_SIZE, textSize).apply()
+        }
+    }
+
+    private fun buildBaseLayoutJson(): String {
+        val textSizeStr = "${textSize.toInt()}sp"
+        return """
         {
           "type": "LinearLayout",
           "props": {
             "layout_width": "match_parent",
             "layout_height": "match_parent",
             "orientation": "vertical",
-            "gravity": "center_horizontal",
-            "paddingTop": "120dp",
-            "paddingBottom": "120dp",
-            "paddingStart": "48dp",
-            "paddingEnd": "48dp",
             "backgroundColor": "#CC000000"
           },
           "children": [
@@ -36,11 +161,11 @@ object CxrCustomViewManager {
               "props": {
                 "id": "$TEXT_VIEW_ID",
                 "layout_width": "match_parent",
-                "layout_height": "wrap_content",
+                "layout_height": "match_parent",
                 "text": "$DEFAULT_EMPTY_TEXT",
-                "textSize": "18sp",
+                "textSize": "$textSizeStr",
                 "textColor": "#FFFFFFFF",
-                "gravity": "center"
+                "gravity": "start|top"
               }
             }
           ]
@@ -56,6 +181,8 @@ object CxrCustomViewManager {
     private var viewReady = false
     @Volatile
     private var latestText: String = DEFAULT_EMPTY_TEXT
+    @Volatile
+    private var latestRawText: String = DEFAULT_EMPTY_TEXT // 保存原始文本，用于重新处理
     @Volatile
     private var pendingText: String? = null
 
@@ -74,7 +201,8 @@ object CxrCustomViewManager {
             if (!openRequested) {
                 Log.d(TAG, "Opening custom view...")
                 openRequested = true
-                val status = CxrApi.getInstance().openCustomView(baseLayoutJson)
+                val layoutJson = buildBaseLayoutJson()
+                val status = CxrApi.getInstance().openCustomView(layoutJson)
                 Log.d(TAG, "openCustomView status: $status")
                 if (status == ValueUtil.CxrStatus.REQUEST_FAILED) {
                     openRequested = false
@@ -91,13 +219,65 @@ object CxrCustomViewManager {
      * 更新展示文字，当页面尚未就绪时会缓存等待。
      */
     fun updateText(rawText: String?) {
-        val displayText = sanitizeText(rawText)
-        pendingText = displayText
+        latestRawText = rawText ?: ""
+        val sanitized = sanitizeText(rawText)
+        val processed = processText(sanitized)
+        pendingText = processed
         if (!viewReady) {
             ensureInitialized()
             return
         }
-        sendTextToView(displayText)
+        sendTextToView(processed)
+    }
+
+    /**
+     * 处理文本：应用用户设置的文本处理选项
+     */
+    private fun processText(text: String): String {
+        if (text == DEFAULT_EMPTY_TEXT) {
+            return text
+        }
+
+        var result = text
+
+        // 删除前 N 行
+        if (removeFirstLine && removeFirstLineCount > 0) {
+            val lines = result.lines()
+            val count = removeFirstLineCount.coerceAtMost(lines.size)
+            if (count > 0 && lines.size > count) {
+                result = lines.drop(count).joinToString("\n")
+            } else if (count > 0 && lines.size <= count) {
+                result = ""
+            }
+        }
+
+        // 删除后 N 行
+        if (removeLastLine && removeLastLineCount > 0) {
+            val lines = result.lines()
+            val count = removeLastLineCount.coerceAtMost(lines.size)
+            if (count > 0 && lines.size > count) {
+                result = lines.dropLast(count).joinToString("\n")
+            } else if (count > 0 && lines.size <= count) {
+                result = ""
+            }
+        }
+
+        // 删除空行（将多个连续空行合并为一个空行，或删除所有空行）
+        if (removeEmptyLines) {
+            // 删除所有空行（包括只包含空白字符的行）
+            result = result.lines()
+                .filter { it.trim().isNotEmpty() }
+                .joinToString("\n")
+        }
+
+        // 删除换行（将所有换行符替换为空格）
+        if (removeLineBreaks) {
+            result = result.replace("\n", " ")
+            // 合并多个连续空格为一个空格
+            result = result.replace(Regex("\\s+"), " ")
+        }
+
+        return result.trim()
     }
 
     /**
@@ -107,6 +287,7 @@ object CxrCustomViewManager {
         runCatching {
             pendingText = null
             latestText = DEFAULT_EMPTY_TEXT
+            latestRawText = DEFAULT_EMPTY_TEXT
             openRequested = false
             viewReady = false
             val status = CxrApi.getInstance().closeCustomView()
@@ -115,6 +296,8 @@ object CxrCustomViewManager {
             Log.e(TAG, "close custom view failed: ${throwable.message}", throwable)
         }
     }
+
+    fun isViewActive(): Boolean = viewReady
 
     private fun registerListenerIfNeeded() {
         if (listenerRegistered) return
@@ -180,6 +363,28 @@ object CxrCustomViewManager {
             return DEFAULT_EMPTY_TEXT
         }
         return if (trimmed.length <= MAX_LENGTH) trimmed else trimmed.take(MAX_LENGTH) + "..."
+    }
+
+    private fun updateTextSize() {
+        if (!viewReady) return
+        val textSizeStr = "${textSize.toInt()}sp"
+        val payload = """
+            [
+              {
+                "action": "update",
+                "id": "$TEXT_VIEW_ID",
+                "props": {
+                  "textSize": "$textSizeStr"
+                }
+              }
+            ]
+        """.trimIndent()
+        runCatching {
+            val status = CxrApi.getInstance().updateCustomView(payload)
+            Log.d(TAG, "updateTextSize status: $status")
+        }.onFailure { throwable ->
+            Log.e(TAG, "updateTextSize error: ${throwable.message}", throwable)
+        }
     }
 
     private fun buildUpdatePayload(text: String): String {

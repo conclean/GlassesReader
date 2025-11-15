@@ -45,12 +45,30 @@ import com.rokid.cxr.client.utils.ValueUtil
  */
 class DeviceScanActivity : ComponentActivity() {
 
+    companion object {
+        private const val TAG = "DeviceScanActivity"
+        // 连接验证延迟时间（给 SDK 时间完成连接）
+        private const val VERIFICATION_DELAY_MS = 1000L
+        // 成功提示显示时间
+        private const val SUCCESS_DELAY_MS = 2000L
+    }
+
     private var isScanning by mutableStateOf(false)
     private var devices by mutableStateOf<List<BluetoothDevice>>(emptyList())
     private var isConnecting by mutableStateOf(false)
     private var connectionStatus by mutableStateOf<String?>(null)
     private var bluetoothHelper: BluetoothHelper? = null
     private val connectionManager = CxrConnectionManager.getInstance()
+    
+    // Handler 用于延迟任务，需要在 onDestroy 中清理
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val verificationRunnable = Runnable {
+        verifyConnection()
+    }
+    private val finishRunnable = Runnable {
+        setResult(RESULT_OK)
+        finish()
+    }
 
     private val bluetoothEnableLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
@@ -73,6 +91,9 @@ class DeviceScanActivity : ComponentActivity() {
                         bluetoothHelper?.stopScan()
                     }
                     Lifecycle.Event.ON_DESTROY -> {
+                        // 清理所有延迟任务
+                        mainHandler.removeCallbacks(verificationRunnable)
+                        mainHandler.removeCallbacks(finishRunnable)
                         bluetoothHelper?.release()
                         bluetoothHelper = null
                     }
@@ -181,23 +202,8 @@ class DeviceScanActivity : ComponentActivity() {
                     isConnecting = false
                     connectionStatus = "连接成功！正在验证..."
                     
-                    // 延迟一下再检查连接状态，给 SDK 时间完成连接
-                    Handler(Looper.getMainLooper()).postDelayed({
-                        val verified = connectionManager.isConnected()
-                        if (verified) {
-                            connectionStatus = "连接成功并已验证！"
-                            Log.d(TAG, "Connection verified: ${connectionManager.isConnected()}")
-                            CxrCustomViewManager.ensureInitialized()
-                            // 延迟返回主页面
-                            Handler(Looper.getMainLooper()).postDelayed({
-                                setResult(RESULT_OK)
-                                finish()
-                            }, 2000)
-                        } else {
-                            connectionStatus = "连接成功但验证失败，请重试"
-                            Log.w(TAG, "Connection not verified: ${connectionManager.isConnected()}")
-                        }
-                    }, 1000)
+                    // 延迟验证连接状态，给 SDK 时间完成连接
+                    mainHandler.postDelayed(verificationRunnable, VERIFICATION_DELAY_MS)
                 }
 
                 override fun onDisconnected() {
@@ -209,29 +215,7 @@ class DeviceScanActivity : ComponentActivity() {
                 override fun onFailed(errorCode: ValueUtil.CxrBluetoothErrorCode?) {
                     Log.e(TAG, "Connection failed: $errorCode")
                     isConnecting = false
-                    
-                    // 根据错误码提供更详细的错误信息
-                    val errorMessage = when (errorCode) {
-                        ValueUtil.CxrBluetoothErrorCode.BLE_CONNECT_FAILED -> {
-                            "连接失败：BLE 连接失败，可能是设备不支持多连接或设备忙"
-                        }
-                        ValueUtil.CxrBluetoothErrorCode.SOCKET_CONNECT_FAILED -> {
-                            "连接失败：Socket 连接失败，可能是设备不支持多连接或网络问题"
-                        }
-                        ValueUtil.CxrBluetoothErrorCode.PARAM_INVALID -> {
-                            "连接失败：参数无效"
-                        }
-                        ValueUtil.CxrBluetoothErrorCode.UNKNOWN -> {
-                            "连接失败：未知错误"
-                        }
-                        null -> {
-                            "连接失败：未知错误"
-                        }
-                        else -> {
-                            "连接失败：$errorCode"
-                        }
-                    }
-                    connectionStatus = errorMessage
+                    connectionStatus = getErrorMessage(errorCode)
                 }
 
                 override fun onConnectionInfo(
@@ -256,8 +240,47 @@ class DeviceScanActivity : ComponentActivity() {
         Log.d(TAG, "Connection status: $connected")
     }
 
-    companion object {
-        private const val TAG = "DeviceScanActivity"
+    /**
+     * 验证连接状态并处理后续逻辑
+     */
+    private fun verifyConnection() {
+        val verified = connectionManager.isConnected()
+        if (verified) {
+            connectionStatus = "连接成功并已验证！"
+            Log.d(TAG, "Connection verified successfully")
+            CxrCustomViewManager.ensureInitialized()
+            // 延迟返回主页面，让用户看到成功提示
+            mainHandler.postDelayed(finishRunnable, SUCCESS_DELAY_MS)
+        } else {
+            connectionStatus = "连接成功但验证失败，请重试"
+            Log.w(TAG, "Connection verification failed")
+        }
+    }
+
+    /**
+     * 根据错误码获取用户友好的错误信息
+     */
+    private fun getErrorMessage(errorCode: ValueUtil.CxrBluetoothErrorCode?): String {
+        return when (errorCode) {
+            ValueUtil.CxrBluetoothErrorCode.BLE_CONNECT_FAILED -> {
+                "连接失败：BLE 连接失败，设备忙"
+            }
+            ValueUtil.CxrBluetoothErrorCode.SOCKET_CONNECT_FAILED -> {
+                "连接失败：Socket 连接失败，可能是设备不支持多连接或网络问题"
+            }
+            ValueUtil.CxrBluetoothErrorCode.PARAM_INVALID -> {
+                "连接失败：参数无效"
+            }
+            ValueUtil.CxrBluetoothErrorCode.UNKNOWN -> {
+                "连接失败：请尝试按三次眼镜按钮，通过重新配对，发起与Glasses Reader的连接"
+            }
+            null -> {
+                "连接失败：请尝试按三次眼镜按钮，通过重新配对，发起与Glasses Reader的连接"
+            }
+            else -> {
+                "连接失败：$errorCode"
+            }
+        }
     }
 }
 
@@ -294,7 +317,7 @@ private fun DeviceScanScreen(
             shape = MaterialTheme.shapes.small
         ) {
             Text(
-                text = "提示：如已连接官方应用，请先断开其蓝牙配对",
+                text = "提示：如已连接官方应用，请按三次眼镜按钮，发起与Glasses Reader的配对",
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSecondaryContainer

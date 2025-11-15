@@ -18,6 +18,8 @@ class CxrConnectionManager private constructor() {
 
     companion object {
         private const val TAG = "CxrConnectionManager"
+        private const val DEFAULT_CONNECTION_TIMEOUT_MS = 10_000L
+        
         @Volatile
         private var INSTANCE: CxrConnectionManager? = null
 
@@ -59,69 +61,21 @@ class CxrConnectionManager private constructor() {
 
     /**
      * 验证连接是否真的成功
+     * 根据文档，连接成功后只需检查 SDK 的连接状态即可
      */
     private fun verifyConnection() {
-        Log.d(TAG, "=== Verifying Connection ===")
-        
-        // 1. 检查 SDK 连接状态
         val sdkConnected = try {
-            val connected = CxrApi.getInstance().isBluetoothConnected()
-            Log.d(TAG, "SDK isBluetoothConnected(): $connected")
-            connected
+            CxrApi.getInstance().isBluetoothConnected()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to check SDK connection: ${e.message}", e)
             false
         }
         
-        // 2. 尝试打开自定义页面来验证连接
         if (sdkConnected) {
-            try {
-                Log.d(TAG, "Attempting to open custom view to verify connection...")
-                val status = CxrApi.getInstance().openCustomView("""{
-                    "type": "LinearLayout",
-                    "props": {
-                        "layout_width": "match_parent",
-                        "layout_height": "match_parent",
-                        "orientation": "vertical",
-                        "gravity": "center",
-                        "backgroundColor": "#CC000000"
-                    },
-                    "children": [{
-                        "type": "TextView",
-                        "props": {
-                            "id": "test_view",
-                            "layout_width": "wrap_content",
-                            "layout_height": "wrap_content",
-                            "text": "连接测试成功！",
-                            "textSize": "24sp",
-                            "textColor": "#FFFFFFFF"
-                        }
-                    }]
-                }""")
-                Log.d(TAG, "openCustomView test result: $status")
-                
-                if (status == ValueUtil.CxrStatus.REQUEST_SUCCEED) {
-                    Log.d(TAG, "✓ Connection verified: Custom view opened successfully!")
-                    // 3秒后关闭测试页面
-                    Handler(Looper.getMainLooper()).postDelayed({
-                        try {
-                            CxrApi.getInstance().closeCustomView()
-                            Log.d(TAG, "Test custom view closed")
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Failed to close test view: ${e.message}")
-                        }
-                    }, 3000)
-                } else {
-                    Log.w(TAG, "⚠ Connection may not be fully established: openCustomView returned $status")
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to verify connection via custom view: ${e.message}", e)
-            }
+            Log.d(TAG, "✓ Connection verified: SDK reports connected")
         } else {
-            Log.w(TAG, "⚠ SDK reports not connected, but onConnected was called")
+            Log.w(TAG, "⚠ Connection verification failed: SDK reports not connected")
         }
-        
-        Log.d(TAG, "=== Connection Verification Complete ===")
     }
 
     /**
@@ -131,6 +85,34 @@ class CxrConnectionManager private constructor() {
         timeoutHandler?.removeCallbacks(timeoutRunnable ?: return)
         timeoutHandler = null
         timeoutRunnable = null
+    }
+
+    /**
+     * 统一记录错误码信息（根据文档中的错误码说明）
+     */
+    private fun logErrorCode(errorCode: ValueUtil.CxrBluetoothErrorCode?, context: String = "") {
+        val prefix = if (context.isNotEmpty()) "$context: " else ""
+        Log.e(TAG, "${prefix}Error code: $errorCode")
+        when (errorCode) {
+            ValueUtil.CxrBluetoothErrorCode.PARAM_INVALID -> {
+                Log.e(TAG, "  - PARAM_INVALID: Parameter Invalid")
+            }
+            ValueUtil.CxrBluetoothErrorCode.BLE_CONNECT_FAILED -> {
+                Log.e(TAG, "  - BLE_CONNECT_FAILED: BLE Connect Failed")
+            }
+            ValueUtil.CxrBluetoothErrorCode.SOCKET_CONNECT_FAILED -> {
+                Log.e(TAG, "  - SOCKET_CONNECT_FAILED: Socket Connect Failed")
+            }
+            ValueUtil.CxrBluetoothErrorCode.UNKNOWN -> {
+                Log.e(TAG, "  - UNKNOWN: Unknown")
+            }
+            null -> {
+                Log.e(TAG, "  - NULL: Error code is null")
+            }
+            else -> {
+                Log.e(TAG, "  - Other error: $errorCode")
+            }
+        }
     }
 
     /**
@@ -151,11 +133,9 @@ class CxrConnectionManager private constructor() {
             return
         }
 
-        // 检查 SDK 是否已连接
+        // 检查 SDK 是否已连接（根据文档使用 isBluetoothConnected() 方法）
         val sdkConnected = try {
-            val connected = CxrApi.getInstance().isBluetoothConnected()
-            Log.d(TAG, "SDK connection status check: $connected")
-            connected
+            CxrApi.getInstance().isBluetoothConnected()
         } catch (e: Exception) {
             Log.w(TAG, "Failed to check SDK connection status: ${e.message}")
             false
@@ -236,9 +216,9 @@ class CxrConnectionManager private constructor() {
                 override fun onConnected() {
                     Log.d(TAG, "onConnected callback received from initBluetooth! Thread: ${Thread.currentThread().name}")
                     cancelTimeout() // 取消超时检测
-                    Log.d(TAG, "initBluetooth onConnected - this may indicate initialization complete, but actual connection happens in connectBluetooth")
-                    // 注意：根据示例代码，initBluetooth 的 onConnected() 可能是空的
+                    // 注意：根据文档，initBluetooth 的 onConnected() 可能是空的
                     // 真正的连接成功应该在 connectBluetooth 的 onConnected() 中处理
+                    // 这里不做任何处理，等待 connectBluetooth 的 onConnected() 回调
                 }
 
                 override fun onDisconnected() {
@@ -254,28 +234,7 @@ class CxrConnectionManager private constructor() {
                 override fun onFailed(errorCode: ValueUtil.CxrBluetoothErrorCode?) {
                     Log.e(TAG, "onFailed callback received! Thread: ${Thread.currentThread().name}")
                     cancelTimeout() // 取消超时检测
-                    Log.e(TAG, "Init failed with error code: $errorCode")
-                    Log.e(TAG, "Error details:")
-                    when (errorCode) {
-                        ValueUtil.CxrBluetoothErrorCode.PARAM_INVALID -> {
-                            Log.e(TAG, "  - PARAM_INVALID: Parameter invalid")
-                        }
-                        ValueUtil.CxrBluetoothErrorCode.BLE_CONNECT_FAILED -> {
-                            Log.e(TAG, "  - BLE_CONNECT_FAILED: BLE connection failed (device may not support multiple connections or is busy)")
-                        }
-                        ValueUtil.CxrBluetoothErrorCode.SOCKET_CONNECT_FAILED -> {
-                            Log.e(TAG, "  - SOCKET_CONNECT_FAILED: Socket connection failed (device may not support multiple connections)")
-                        }
-                        ValueUtil.CxrBluetoothErrorCode.UNKNOWN -> {
-                            Log.e(TAG, "  - UNKNOWN: Unknown error")
-                        }
-                        null -> {
-                            Log.e(TAG, "  - NULL: Error code is null")
-                        }
-                        else -> {
-                            Log.e(TAG, "  - Other error: $errorCode")
-                        }
-                    }
+                    logErrorCode(errorCode, "Init failed")
                     isConnecting = false
                     socketUuid = null
                     macAddress = null
@@ -298,7 +257,7 @@ class CxrConnectionManager private constructor() {
                     callback?.onFailed(ValueUtil.CxrBluetoothErrorCode.UNKNOWN)
                 }
             }
-            timeoutHandler?.postDelayed(timeoutRunnable!!, 10000)
+            timeoutHandler?.postDelayed(timeoutRunnable!!, DEFAULT_CONNECTION_TIMEOUT_MS)
         } catch (e: Exception) {
             Log.e(TAG, "Exception occurred while calling initBluetooth: ${e.message}", e)
             isConnecting = false
@@ -374,30 +333,9 @@ class CxrConnectionManager private constructor() {
                 }
 
                 override fun onFailed(errorCode: ValueUtil.CxrBluetoothErrorCode?) {
-                    Log.e(TAG, "Failed") // 按照示例代码的简单日志
+                    Log.e(TAG, "Failed") // 按照文档示例的简单日志
                     cancelTimeout() // 取消超时检测
-                    // 添加详细错误信息用于调试
-                    Log.e(TAG, "Connection failed with error code: $errorCode")
-                    when (errorCode) {
-                        ValueUtil.CxrBluetoothErrorCode.PARAM_INVALID -> {
-                            Log.e(TAG, "  - PARAM_INVALID: Parameter invalid")
-                        }
-                        ValueUtil.CxrBluetoothErrorCode.BLE_CONNECT_FAILED -> {
-                            Log.e(TAG, "  - BLE_CONNECT_FAILED: BLE connection failed")
-                        }
-                        ValueUtil.CxrBluetoothErrorCode.SOCKET_CONNECT_FAILED -> {
-                            Log.e(TAG, "  - SOCKET_CONNECT_FAILED: Socket connection failed")
-                        }
-                        ValueUtil.CxrBluetoothErrorCode.UNKNOWN -> {
-                            Log.e(TAG, "  - UNKNOWN: Unknown error")
-                        }
-                        null -> {
-                            Log.e(TAG, "  - NULL: Error code is null")
-                        }
-                        else -> {
-                            Log.e(TAG, "  - Other error: $errorCode")
-                        }
-                    }
+                    logErrorCode(errorCode, "Connection failed")
                     isConnecting = false
                     this@CxrConnectionManager.socketUuid = null
                     this@CxrConnectionManager.macAddress = null
@@ -409,16 +347,34 @@ class CxrConnectionManager private constructor() {
 
     /**
      * 重连（使用已保存的连接信息）
+     * 根据文档，重连可以直接使用 connectBluetooth，不需要重新 initBluetooth
+     * 
+     * @param context Application Context
+     * @param callback 连接状态回调（可选，如果不提供则使用之前保存的回调）
      */
-    fun reconnect(context: Context) {
+    fun reconnect(context: Context, callback: ConnectionCallback? = null) {
         val uuid = socketUuid
         val mac = macAddress
 
         if (uuid == null || mac == null) {
             Log.w(TAG, "Cannot reconnect: missing connection info")
+            callback?.onFailed(ValueUtil.CxrBluetoothErrorCode.PARAM_INVALID)
             return
         }
 
+        // 如果提供了新的回调，则更新；否则使用之前保存的回调
+        if (callback != null) {
+            this.connectionCallback = callback
+        }
+        
+        // 检查是否已连接
+        if (isConnected()) {
+            Log.d(TAG, "Already connected, skip reconnect")
+            connectionCallback?.onConnected()
+            return
+        }
+
+        isConnecting = true
         connectBluetooth(context, uuid, mac)
     }
 

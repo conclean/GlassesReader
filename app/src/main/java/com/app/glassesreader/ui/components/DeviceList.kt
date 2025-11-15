@@ -108,7 +108,7 @@ private fun DeviceItem(
                 if (isConnected) {
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "ℹ️ 设备已连接（BLE 支持多连接，仍可尝试连接）",
+                        text = "该设备蓝牙音频已连接，可尝试直接连接",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.primary
                     )

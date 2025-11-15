@@ -1,56 +1,170 @@
 # GlassesReader 无障碍文本采集工具
 
 ## 项目概述
-GlassesReader 是一款基于 Kotlin 与 Jetpack Compose 构建的安卓工具应用，借助无障碍服务抓取前台应用的屏幕文字，并以浮窗形式展示，后续可扩展同步到智能眼镜。目前聚焦于文本采集与本地浮窗显示。
+GlassesReader 是一款基于 Kotlin 与 Jetpack Compose 构建的 Android 工具应用，通过无障碍服务抓取前台应用的屏幕文字，并通过蓝牙推送到 Rokid 智能眼镜显示。应用采用 Material Design 3 设计规范，提供简洁直观的用户界面。
 
-## 核心需求
-- 启用无障碍服务后，监听屏幕内容变化，自动解析可见文字（优先适配 QQ 浏览器小说页面，同时兼顾其他阅读场景）。
-- 提供常驻后台的浮窗开关，不干扰原有触控操作。
-- 提供测试用文字浮窗：透明背景、不拦截触控，便于观察采集结果。
+## 核心功能
+- **无障碍文本采集**：监听屏幕内容变化，自动解析可见文字（优先适配 微信读书页面，同时兼顾其他阅读场景）
+- **智能眼镜同步**：实时将采集的文本推送到 Rokid 眼镜端自定义页面显示
+- **双控制入口**：
+  - 主页圆形 FAB 按钮：主要服务控制入口，可随时开启/关闭读屏服务
+  - 悬浮窗开关按钮：可拖曳的浮窗按钮，与主页按钮状态同步（可在设置中隐藏）
+- **设备连接管理**：扫描、连接 Rokid 眼镜，实时检查连接状态，支持服务重启
+- **显示设置**：调节眼镜端亮度（0-15）、字体大小，配置文本处理选项
+- **应用设置**：控制悬浮窗开关的显示/隐藏
+
+## 技术栈
+- **开发语言**：Kotlin
+- **UI 框架**：Jetpack Compose + Material Design 3
+- **架构模式**：MVVM（Model-View-ViewModel）
+- **最低 SDK**：API 29 (Android 10)
+- **目标 SDK**：API 35 (Android 15)
+- **依赖库**：
+  - Rokid CXR-M SDK：智能眼镜连接与自定义页面管理
+  - EasyFloat：悬浮窗管理
+  - Jetpack Compose：声明式 UI
 
 ## 权限与服务
-- `android.permission.SYSTEM_ALERT_WINDOW`：创建悬浮窗，用于显示开关按钮和文本浮窗。
-- `android.permission.FOREGROUND_SERVICE`、`android.permission.FOREGROUND_SERVICE_DATA_SYNC`：Android 14+ 以 dataSync 类型启动前台服务所需。
-- `android.permission.POST_NOTIFICATIONS`（Android 13+）：显示前台服务常驻通知。
-- `android.permission.ACCESS_COARSE_LOCATION`、`android.permission.ACCESS_FINE_LOCATION`：配合蓝牙扫描掌握设备位置权限要求。
-- `android.permission.BLUETOOTH`、`android.permission.BLUETOOTH_ADMIN`、`android.permission.BLUETOOTH_CONNECT`、`android.permission.BLUETOOTH_SCAN`（Android 12+）：用于与智能眼镜进行蓝牙通信。
-- 无障碍服务 `ScreenTextService`：监听 `TYPE_VIEW_TEXT_CHANGED`、`TYPE_WINDOW_CONTENT_CHANGED`、`TYPE_VIEW_SCROLLED` 等事件并整理文本。
-- 前台服务 `TextOverlayService`：通过 [EasyFloat](https://github.com/princekin-f/EasyFloat) 创建开关浮窗与文本浮窗，维持常驻展示。
 
-## 模块规划
-- `MainActivity`：引导授权悬浮窗/无障碍/通知权限，并启动文本服务。
-- `accessibility/service/ScreenTextService`：解析屏幕节点并输出文本。
-- `service/overlay/TextOverlayService`：以前台服务形式运行 EasyFloat 浮窗。
-- `sdk/CxrCustomViewManager`：封装 Rokid 自定义页面的打开、更新与关闭逻辑。
-- `ui/components/FloatingToggle`：浮窗开关的文字样式（Reading / Off）。
+### 系统权限
+- `SYSTEM_ALERT_WINDOW`：创建悬浮窗，用于显示开关按钮
+- `FOREGROUND_SERVICE`、`FOREGROUND_SERVICE_DATA_SYNC`：Android 14+ 前台服务所需
+- `POST_NOTIFICATIONS`（Android 13+）：显示前台服务常驻通知
+- `ACCESS_COARSE_LOCATION`、`ACCESS_FINE_LOCATION`：蓝牙扫描所需
+- `BLUETOOTH`、`BLUETOOTH_ADMIN`、`BLUETOOTH_CONNECT`、`BLUETOOTH_SCAN`（Android 12+）：蓝牙通信
+
+### 系统服务
+- **无障碍服务** `ScreenTextService`：监听 `TYPE_VIEW_TEXT_CHANGED`、`TYPE_WINDOW_CONTENT_CHANGED`、`TYPE_VIEW_SCROLLED` 等事件并整理文本
+- **前台服务** `TextOverlayService`：通过 EasyFloat 创建开关浮窗并维持采集服务
+
+## 项目结构
+
+```
+app/src/main/java/com/app/glassesreader/
+├── MainActivity.kt                    # 主界面，包含权限引导、设备连接、显示设置、应用设置
+├── accessibility/
+│   ├── ScreenTextPublisher.kt        # 文本发布器，管理文本流
+│   └── service/
+│       └── ScreenTextService.kt      # 无障碍服务，抓取屏幕文字
+├── sdk/
+│   ├── BluetoothHelper.kt            # 蓝牙扫描与设备管理工具
+│   ├── CxrConnectionManager.kt       # Rokid SDK 蓝牙连接管理（初始化、连接、重连）
+│   └── CxrCustomViewManager.kt       # 眼镜端自定义页面管理（打开、更新、关闭）
+├── service/
+│   └── overlay/
+│       └── TextOverlayService.kt     # 前台服务，管理悬浮窗和文本订阅
+└── ui/
+    ├── components/
+    │   ├── DeviceList.kt             # 设备列表组件
+    │   └── FloatingToggle.kt         # 悬浮窗开关组件
+    ├── screens/
+    │   └── DeviceScanActivity.kt     # 设备扫描页面
+    └── theme/                        # Material Design 3 主题配置
+```
+
+## 主要功能模块
+
+### 1. 权限引导（SETUP）
+- 检查并引导用户授权悬浮窗权限
+- 检查并引导用户启用无障碍服务
+- 检查并引导用户授权通知权限（Android 13+）
+- 检查并引导用户授权蓝牙相关权限
+
+### 2. 设备连接（CONNECT）
+- 扫描附近的 Rokid 蓝牙设备
+- 显示设备连接状态（已连接/未连接）
+- 显示眼镜端自定义页面运行状态（已启动/未启动）
+- 提供"重新扫描"和"重启服务"功能
+- **重要**：每次应用启动需要重新配对连接，不支持自动连接
+
+### 3. 显示设置（DISPLAY）
+- **亮度调节**：0-15 档位，实时同步到眼镜端
+- **字体大小**：12-48 sp，可调节眼镜端显示字体
+- **文本处理选项**：
+  - 删除空行
+  - 删除换行符
+  - 删除首行/尾行（可设置删除行数）
+
+### 4. 应用设置（SETTINGS）
+- **悬浮窗开关按钮**：控制手机端悬浮窗的显示/隐藏
+  - 当权限或连接未完成时，开关禁用并提示
+  - 当所有条件满足时，开关启用，用户可手动开启悬浮窗
+  - 悬浮窗隐藏时，仍可通过主页 FAB 按钮控制服务
+
+## 使用指引
+
+### 首次使用
+1. **权限授权**：首次启动应用会停留在"权限引导"页，依次完成：
+   - 悬浮窗权限授权
+   - 无障碍服务启用（在系统设置中找到 `ScreenTextService` 并启用）
+   - 通知权限授权（Android 13+）
+   - 蓝牙与定位权限授权
+
+2. **设备连接**：
+   - 前往"设备连接"页，点击"扫描设备"
+   - 选择目标 Rokid 眼镜设备
+   - **重要**：连接前请先断开官方应用的蓝牙配对，或将眼镜进入配对模式
+   - 等待连接成功（连接过程可能需要 10 秒左右）
+
+3. **启动服务**：
+   - 当权限与连接全部就绪时，点击主页右下角圆形 FAB 按钮启动读屏服务
+   - 服务启动后，手机悬浮窗和眼镜端页面将同步显示识别文本
+
+### 日常使用
+- **控制服务**：
+  - 主页圆形 FAB 按钮：主要控制入口，点击可开启/暂停读屏服务
+  - 悬浮窗开关：可拖曳的浮窗按钮，与主页按钮状态同步（可在"应用设置"中隐藏）
+
+- **调整显示**：
+  - 在"显示设置"页调整眼镜端亮度、字体大小
+  - 配置文本处理选项以优化显示效果
+
+- **服务重启**：
+  - 如果眼镜端自定义页面意外退出，可在"设备连接"页点击"重启服务"
+  - 重启服务会重新初始化眼镜端页面，并自动启动读屏服务
 
 ## 开发里程碑
 - [x] 权限声明与工程初始化
 - [x] 无障碍文本采集服务完成
-- [x] 浮窗控制与 UI 组件完成（开关浮窗可拖曳，文本浮窗透明且不拦截触控，支持滚动查看完整文本）
+- [x] 浮窗控制组件完成（开关浮窗可拖曳，启动/暂停采集并同步至眼镜）
 - [x] 服务间流程整合与状态管理（前台服务 + Flow 数据管线）
-- [x] 实机测试并更新使用文档、已知限制（持续跟进）
-- [x] 集成智能眼镜 SDK 自定义页面文字同步（进行增量迭代）
+- [x] 集成智能眼镜 SDK 自定义页面文字同步
+- [x] 设备连接管理（扫描、连接、状态检查、服务重启）
+- [x] 显示设置（亮度、字体大小、文本处理选项）
+- [x] 应用设置（悬浮窗开关控制）
+- [x] UI 优化（圆形 FAB 按钮、Material Design 3）
 
-## 使用指引
-1. 首次启动 App 后，按主界面提示依次授权"悬浮窗""无障碍""通知(13+)"权限。
-2. 授权蓝牙与定位等通讯相关权限（Android 12+ 需额外允许扫描/连接）。
-3. 在"无障碍服务"页启用 **GlassesReader 屏幕文字采集**。
-4. **重要：连接智能眼镜前，请先断开 Rokid 官方应用的蓝牙配对**，然后由本应用发起配对和连接。
-5. 返回 App，点击"连接智能眼镜"进入扫描页面，选择设备进行连接。
-6. 连接成功后，点击"启动服务"，系统会常驻通知并显示右侧开关浮窗。
-7. 应用会自动在眼镜端打开自定义页面，轻点浮窗开关可开始/暂停文字采集；浮窗支持拖动调整位置。
-8. 启用后会出现透明文本浮窗（不拦截触控），可在 QQ 浏览器、微信读书等阅读页面观察文字更新，支持滚动浏览完整采集内容，同时最新文本会推送至眼镜自定义页面。
-9. 如需暂停，点击浮窗或主界面的"停止服务"，通知与浮窗将一并回收，眼镜端页面会显示占位文案。
+## 已知限制与注意事项
 
-## 已知限制
-- 文本采集依赖目标应用的无障碍节点，若页面采用 Canvas 自绘等方案可能无法完整捕获。
-- 眼镜端自定义页面依赖蓝牙连接，如连接断开将退回占位文本。
-- 尚未实现文本增量对比、翻页检测等优化，长篇内容可能重复显示整体段落。
-- **蓝牙连接限制**：Rokid 眼镜在同一时间只能与一个应用建立 SDK 连接。如果官方应用已连接，需要先断开其配对，再由本应用发起连接。
+### 蓝牙连接限制
+- **独占连接**：Rokid 眼镜在同一时间只能与一个应用建立 SDK 连接。如果官方应用已连接，需要先断开其配对，再由本应用发起连接。
+- **手动配对**：每次应用启动需要重新配对连接，不支持自动连接和记住设备功能。
+- **连接超时**：如果 `initBluetooth()` 在 10 秒内未收到回调，会判定为连接超时。可能原因：
+  1. 设备已被其他应用占用
+  2. SDK 内部错误
+  3. 设备不支持多连接
+
+### 文本采集限制
+- 文本采集依赖目标应用的无障碍节点，若页面采用 Canvas 自绘等方案可能无法完整捕获
+- 眼镜端自定义页面依赖蓝牙连接，如连接断开将退回占位文本
+
+### 使用建议
+- 连接前确保官方应用已断开蓝牙配对
+- 如果连接失败，尝试将眼镜进入配对模式后重新扫描连接
+- 建议在连接成功后，先测试文本采集功能是否正常
 
 ## 后续展望
-- 与 Rokid 智能眼镜等设备联动（规划中）。
-- 增加文本分段、语音播报等辅助功能。
-- 支持多语言与自定义快捷操作。
+- [ ] 优化文本增量更新逻辑，减少重复显示
+- [ ] 增加翻页检测与智能分段功能
+- [ ] 支持更多阅读应用的文本采集优化
+- [ ] 增加文本历史记录功能
+- [ ] 支持多语言界面
 
+## 技术文档参考
+- [Rokid CXR-M SDK 文档](./sdk/doc/)
+  - [设备连接](./sdk/doc/设备连接.md)
+  - [控制与监听设备状态](./sdk/doc/控制与监听设备状态.md)
+  - [数据操作](./sdk/doc/数据操作.md)
+
+## 许可证
+本项目仅供学习和研究使用。
