@@ -170,99 +170,119 @@ class CxrConnectionManager private constructor() {
         this.connectionCallback = callback
         isConnecting = true
 
-        Log.d(TAG, "Initializing device: ${device.name}, address: ${device.address}")
-        Log.d(TAG, "Calling CxrApi.getInstance().initBluetooth()...")
-
+        // 重要：在调用 initBluetooth() 之前，先清理 SDK 状态
+        // 避免重复初始化导致 SDK 无响应的问题
+        Log.d(TAG, "Cleaning up SDK state before initialization...")
         try {
-            CxrApi.getInstance().initBluetooth(
-            context,
-            device,
-            object : BluetoothStatusCallback {
-                override fun onConnectionInfo(
-                    socketUuid: String?,
-                    macAddress: String?,
-                    rokidAccount: String?,
-                    glassesType: Int
-                ) {
-                    Log.d(TAG, "onConnectionInfo callback received! Thread: ${Thread.currentThread().name}")
-                    cancelTimeout() // 取消超时检测
-                    Log.d(
-                        TAG,
-                        "Connection info received - UUID: $socketUuid, MAC: $macAddress, " +
-                            "Account: $rokidAccount, Type: $glassesType"
-                    )
+            CxrApi.getInstance().deinitBluetooth()
+            Log.d(TAG, "SDK state cleaned up")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to cleanup SDK state (may not be initialized): ${e.message}")
+            // 如果 deinit 失败，可能是 SDK 未初始化，继续尝试 init
+        }
 
-                    this@CxrConnectionManager.socketUuid = socketUuid
-                    this@CxrConnectionManager.macAddress = macAddress
+        // 使用 Handler 延迟调用 initBluetooth，给 SDK 时间完成清理
+        val initHandler = Handler(Looper.getMainLooper())
+        initHandler.postDelayed({
+            if (!isConnecting) {
+                Log.w(TAG, "Connection cancelled before init, skip")
+                return@postDelayed
+            }
+            
+            Log.d(TAG, "Initializing device: ${device.name}, address: ${device.address}")
+            Log.d(TAG, "Calling CxrApi.getInstance().initBluetooth()...")
 
-                    callback?.onConnectionInfo(socketUuid, macAddress, rokidAccount, glassesType)
+            try {
+                CxrApi.getInstance().initBluetooth(
+                    context,
+                    device,
+                    object : BluetoothStatusCallback {
+                        override fun onConnectionInfo(
+                            socketUuid: String?,
+                            macAddress: String?,
+                            rokidAccount: String?,
+                            glassesType: Int
+                        ) {
+                            Log.d(TAG, "onConnectionInfo callback received! Thread: ${Thread.currentThread().name}")
+                            cancelTimeout() // 取消超时检测
+                            Log.d(
+                                TAG,
+                                "Connection info received - UUID: $socketUuid, MAC: $macAddress, " +
+                                    "Account: $rokidAccount, Type: $glassesType"
+                            )
 
-                    socketUuid?.let { uuid ->
-                        macAddress?.let { mac ->
-                            Log.d(TAG, "Attempting to connect with UUID: $uuid, MAC: $mac")
-                            connectBluetooth(context, uuid, mac)
-                        } ?: run {
-                            Log.e(TAG, "macAddress is null")
-                            isConnecting = false
-                            callback?.onFailed(ValueUtil.CxrBluetoothErrorCode.PARAM_INVALID)
+                            this@CxrConnectionManager.socketUuid = socketUuid
+                            this@CxrConnectionManager.macAddress = macAddress
+
+                            callback?.onConnectionInfo(socketUuid, macAddress, rokidAccount, glassesType)
+
+                            socketUuid?.let { uuid ->
+                                macAddress?.let { mac ->
+                                    Log.d(TAG, "Attempting to connect with UUID: $uuid, MAC: $mac")
+                                    connectBluetooth(context, uuid, mac)
+                                } ?: run {
+                                    Log.e(TAG, "macAddress is null")
+                                    isConnecting = false
+                                    callback?.onFailed(ValueUtil.CxrBluetoothErrorCode.PARAM_INVALID)
+                                }
+                            } ?: run {
+                                Log.e(TAG, "socketUuid is null")
+                                isConnecting = false
+                                callback?.onFailed(ValueUtil.CxrBluetoothErrorCode.PARAM_INVALID)
+                            }
                         }
-                    } ?: run {
-                        Log.e(TAG, "socketUuid is null")
+
+                        override fun onConnected() {
+                            Log.d(TAG, "onConnected callback received from initBluetooth! Thread: ${Thread.currentThread().name}")
+                            cancelTimeout() // 取消超时检测
+                            // 注意：根据文档，initBluetooth 的 onConnected() 可能是空的
+                            // 真正的连接成功应该在 connectBluetooth 的 onConnected() 中处理
+                            // 这里不做任何处理，等待 connectBluetooth 的 onConnected() 回调
+                        }
+
+                        override fun onDisconnected() {
+                            Log.d(TAG, "onDisconnected callback received! Thread: ${Thread.currentThread().name}")
+                            cancelTimeout() // 取消超时检测
+                            Log.d(TAG, "Bluetooth disconnected")
+                            isConnecting = false
+                            socketUuid = null
+                            macAddress = null
+                            callback?.onDisconnected()
+                        }
+
+                        override fun onFailed(errorCode: ValueUtil.CxrBluetoothErrorCode?) {
+                            Log.e(TAG, "onFailed callback received! Thread: ${Thread.currentThread().name}")
+                            cancelTimeout() // 取消超时检测
+                            logErrorCode(errorCode, "Init failed")
+                            isConnecting = false
+                            socketUuid = null
+                            macAddress = null
+                            callback?.onFailed(errorCode)
+                        }
+                    }
+                )
+                Log.d(TAG, "initBluetooth() call completed, waiting for callbacks...")
+                
+                // 设置超时检测：如果 10 秒内没有回调，认为失败
+                timeoutHandler = Handler(Looper.getMainLooper())
+                timeoutRunnable = Runnable {
+                    if (isConnecting) {
+                        Log.e(TAG, "initBluetooth timeout: No callback received within 10 seconds")
+                        Log.e(TAG, "This may indicate:")
+                        Log.e(TAG, "  1. Device is already connected by another app")
+                        Log.e(TAG, "  2. SDK internal error")
+                        Log.e(TAG, "  3. Device does not support multiple connections")
                         isConnecting = false
-                        callback?.onFailed(ValueUtil.CxrBluetoothErrorCode.PARAM_INVALID)
+                        callback?.onFailed(ValueUtil.CxrBluetoothErrorCode.UNKNOWN)
                     }
                 }
-
-                override fun onConnected() {
-                    Log.d(TAG, "onConnected callback received from initBluetooth! Thread: ${Thread.currentThread().name}")
-                    cancelTimeout() // 取消超时检测
-                    // 注意：根据文档，initBluetooth 的 onConnected() 可能是空的
-                    // 真正的连接成功应该在 connectBluetooth 的 onConnected() 中处理
-                    // 这里不做任何处理，等待 connectBluetooth 的 onConnected() 回调
-                }
-
-                override fun onDisconnected() {
-                    Log.d(TAG, "onDisconnected callback received! Thread: ${Thread.currentThread().name}")
-                    cancelTimeout() // 取消超时检测
-                    Log.d(TAG, "Bluetooth disconnected")
-                    isConnecting = false
-                    socketUuid = null
-                    macAddress = null
-                    callback?.onDisconnected()
-                }
-
-                override fun onFailed(errorCode: ValueUtil.CxrBluetoothErrorCode?) {
-                    Log.e(TAG, "onFailed callback received! Thread: ${Thread.currentThread().name}")
-                    cancelTimeout() // 取消超时检测
-                    logErrorCode(errorCode, "Init failed")
-                    isConnecting = false
-                    socketUuid = null
-                    macAddress = null
-                    callback?.onFailed(errorCode)
-                }
+                timeoutHandler?.postDelayed(timeoutRunnable!!, DEFAULT_CONNECTION_TIMEOUT_MS)
+            } catch (e: Exception) {
+                Log.e(TAG, "Exception occurred while calling initBluetooth: ${e.message}", e)
+                isConnecting = false
+                callback?.onFailed(ValueUtil.CxrBluetoothErrorCode.UNKNOWN)
             }
-            )
-            Log.d(TAG, "initBluetooth() call completed, waiting for callbacks...")
-            
-            // 设置超时检测：如果 10 秒内没有回调，认为失败
-            timeoutHandler = Handler(Looper.getMainLooper())
-            timeoutRunnable = Runnable {
-                if (isConnecting) {
-                    Log.e(TAG, "initBluetooth timeout: No callback received within 10 seconds")
-                    Log.e(TAG, "This may indicate:")
-                    Log.e(TAG, "  1. Device is already connected by another app")
-                    Log.e(TAG, "  2. SDK internal error")
-                    Log.e(TAG, "  3. Device does not support multiple connections")
-                    isConnecting = false
-                    callback?.onFailed(ValueUtil.CxrBluetoothErrorCode.UNKNOWN)
-                }
-            }
-            timeoutHandler?.postDelayed(timeoutRunnable!!, DEFAULT_CONNECTION_TIMEOUT_MS)
-        } catch (e: Exception) {
-            Log.e(TAG, "Exception occurred while calling initBluetooth: ${e.message}", e)
-            isConnecting = false
-            callback?.onFailed(ValueUtil.CxrBluetoothErrorCode.UNKNOWN)
-        }
+        }, 200) // 延迟 200ms，给 SDK 时间完成清理
     }
 
     /**
