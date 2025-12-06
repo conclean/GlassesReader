@@ -156,9 +156,9 @@ class CxrConnectionManager private constructor() {
     }
     
     /**
-     * 检查是否有保存的连接信息（用于快速重连）
+     * 检查是否有保存的连接信息
      * 
-     * @return true 表示有保存的连接参数（socketUuid 和 macAddress），可以进行快速重连
+     * @return true 表示有保存的连接参数（socketUuid 和 macAddress）
      */
     fun hasSavedConnectionInfo(): Boolean {
         // 如果内存中有，直接返回
@@ -760,7 +760,6 @@ class CxrConnectionManager private constructor() {
     // 
     // 【使用场景】
     //   - 应用启动时自动尝试重连之前连接的设备
-    //   - 连接断开后快速重连（如果参数仍然有效）
     // 
     // ============================================================================
     
@@ -779,7 +778,6 @@ class CxrConnectionManager private constructor() {
      * 
      * 【使用场景】
      * - 应用启动时自动重连
-     * - 连接断开后快速重连
      * 
      * 【参考文档】
      * - 设备连接.md 第6节 "蓝牙重连"

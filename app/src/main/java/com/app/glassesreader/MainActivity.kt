@@ -204,8 +204,7 @@ class MainActivity : ComponentActivity() {
                         onToggleService = ::onToggleReaderRequested,
                         onOverlaySettingChange = ::onOverlaySettingChange,
                         onShowMessage = ::showToast,
-                        onBrightnessChange = ::onBrightnessChange,
-                        onQuickReconnect = ::quickReconnect
+                        onBrightnessChange = ::onBrightnessChange
                     )
                     
                     // 自动重连失败弹窗
@@ -571,61 +570,6 @@ class MainActivity : ComponentActivity() {
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
     }
 
-    /**
-     * 快速重连（使用已保存的连接参数）
-     * 逻辑与自动重连相同，但由用户手动触发
-     */
-    private fun quickReconnect() {
-        if (glassesConnected) {
-            showToast("已连接，无需重连")
-            return
-        }
-        
-        if (!connectionManager.hasSavedConnectionInfo()) {
-            showToast("没有保存的连接信息，请先扫描并连接设备")
-            return
-        }
-        
-        showToast("正在重连...")
-        connectionManager.autoReconnect(object : CxrConnectionManager.ConnectionCallback {
-            override fun onConnected() {
-                Log.d(LOG_TAG, "Quick reconnect succeeded")
-                checkConnectionStatus()
-                showToast("重连成功")
-            }
-            
-            override fun onDisconnected() {
-                Log.d(LOG_TAG, "Quick reconnect disconnected")
-                checkConnectionStatus()
-            }
-            
-            override fun onFailed(errorCode: com.rokid.cxr.client.utils.ValueUtil.CxrBluetoothErrorCode?) {
-                Log.d(LOG_TAG, "Quick reconnect failed: $errorCode")
-                val message = when (errorCode) {
-                    com.rokid.cxr.client.utils.ValueUtil.CxrBluetoothErrorCode.BLE_CONNECT_FAILED -> {
-                        "重连失败：设备忙，请尝试扫描设备重新连接"
-                    }
-                    com.rokid.cxr.client.utils.ValueUtil.CxrBluetoothErrorCode.SOCKET_CONNECT_FAILED -> {
-                        "重连失败：Socket 连接失败，请尝试扫描设备重新连接"
-                    }
-                    else -> {
-                        "重连失败，请尝试扫描设备重新连接"
-                    }
-                }
-                showToast(message)
-                checkConnectionStatus()
-            }
-            
-            override fun onConnectionInfo(
-                socketUuid: String?,
-                macAddress: String?,
-                rokidAccount: String?,
-                glassesType: Int
-            ) {
-                // 连接信息更新
-            }
-        })
-    }
 
     companion object {
         const val LOG_TAG = "MainActivity"
@@ -675,8 +619,7 @@ private fun MainScreen(
     onToggleService: () -> Unit,
     onOverlaySettingChange: (Boolean) -> Unit,
     onShowMessage: (String) -> Unit,
-    onBrightnessChange: (Int) -> Unit,
-    onQuickReconnect: () -> Unit
+    onBrightnessChange: (Int) -> Unit
 ) {
     val tabs = remember { MainTab.values().toList() }
     var selectedTab by rememberSaveable { mutableStateOf(defaultTab) }
@@ -732,8 +675,7 @@ private fun MainScreen(
                 MainTab.CONNECT -> ConnectionTabContent(
                     uiState = uiState,
                     modifier = Modifier.fillMaxSize(),
-                    onOpenDeviceScan = onOpenDeviceScan,
-                    onQuickReconnect = onQuickReconnect
+                    onOpenDeviceScan = onOpenDeviceScan
                 )
 
                 MainTab.DISPLAY -> DisplayTabContent(
@@ -868,8 +810,7 @@ private fun SetupTabContent(
 private fun ConnectionTabContent(
     uiState: MainUiState,
     modifier: Modifier = Modifier,
-    onOpenDeviceScan: () -> Unit,
-    onQuickReconnect: () -> Unit
+    onOpenDeviceScan: () -> Unit
 ) {
     val scrollState = rememberScrollState()
     Column(
@@ -902,23 +843,6 @@ private fun ConnectionTabContent(
             } else null,
             onAction = if (uiState.sdkPermissionsGranted) onOpenDeviceScan else null
         )
-
-        // 快速重连按钮（针对已配对但未连接的设备）
-        // 始终显示，但根据是否有保存的连接信息来启用/禁用
-        if (!uiState.glassesConnected && uiState.sdkPermissionsGranted) {
-            StatusListItem(
-                title = "快速重连",
-                isCompleted = false,
-                description = if (uiState.hasSavedConnectionInfo) {
-                    "使用已保存的连接信息快速重连已配对的眼镜。"
-                } else {
-                    "暂无保存的连接信息，请先扫描并连接设备。"
-                },
-                actionLabel = "重连",
-                onAction = if (uiState.hasSavedConnectionInfo) onQuickReconnect else null,
-                actionEnabled = uiState.hasSavedConnectionInfo
-            )
-        }
 
     }
 }
