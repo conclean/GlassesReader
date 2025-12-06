@@ -24,7 +24,7 @@ object ScreenTextPublisher {
     val state: StateFlow<ScreenTextState> = _state.asStateFlow()
 
     /**
-     * 更新字幕內容，避免重複發送相同資訊。
+     * 更新字幕内容，避免重复发送相同信息。
      */
     fun updateText(rawText: String) {
         val normalized = rawText.trim()

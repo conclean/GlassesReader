@@ -8,7 +8,48 @@ import com.rokid.cxr.client.extend.listeners.CustomViewListener
 import com.rokid.cxr.client.utils.ValueUtil
 
 /**
+ * Rokid 眼镜端自定义页面管理器
+ * 
+ * 【作用】
  * 统一管理 Rokid 眼镜端自定义页面的打开、更新与关闭。
+ * 通过 JSON 描述页面布局，下发到眼镜端显示，实现文本内容的实时显示。
+ * 
+ * 【主要功能】
+ * 1. 打开自定义界面（openCustomView）- 使用 JSON 描述初始化页面
+ * 2. 更新界面内容（updateCustomView）- 更新特定控件的属性
+ * 3. 关闭界面（closeCustomView）- 关闭眼镜端页面
+ * 4. 监听界面状态（CustomViewListener）- 监听页面生命周期事件
+ * 5. 文本处理和格式化 - 应用用户设置的文本处理选项
+ * 6. 字体大小管理 - 支持动态调整字体大小
+ * 
+ * 【参考文档】
+ * - 自定义页面场景.md 第1节 "打开自定义界面"
+ *   - openCustomView(content: String) 方法
+ *   - content 为界面初始化 JSON 字符串
+ * - 自定义页面场景.md 第2节 "监听界面状态"
+ *   - setCustomViewListener() 方法
+ *   - CustomViewListener 接口说明
+ * - 自定义页面场景.md 第3节 "更新界面"
+ *   - updateCustomView(content: String) 方法
+ *   - content 为 JSON 数组，指定操作类型和目标控件
+ * - 自定义页面场景.md 第4节 "关闭界面"
+ *   - closeCustomView() 方法
+ * - 自定义页面场景.md 第6节 "初始化布局 JSON"
+ *   - 布局支持 LinearLayout 和 RelativeLayout
+ *   - 控件支持 TextView 和 ImageView
+ * 
+ * 【使用流程】
+ * 1. 调用 init(context) 初始化管理器
+ * 2. 确保蓝牙已连接（通过 CxrConnectionManager）
+ * 3. 调用 ensureInitialized() 打开自定义页面
+ * 4. 调用 updateText() 更新文本内容
+ * 5. 调用 close() 关闭页面
+ * 
+ * 【注意事项】
+ * - 使用自定义页面前，必须确保蓝牙连接已建立
+ * - 页面描述使用 JSON 格式
+ * - 文本长度限制为 500 字符（超过会截断）
+ * - 字体大小范围：12-48 sp
  */
 object CxrCustomViewManager {
 
@@ -144,6 +185,14 @@ object CxrCustomViewManager {
         }
     }
 
+    /**
+     * 构建基础布局 JSON
+     * 
+     * 参考文档：自定义页面场景.md 第6节 "初始化布局 JSON"
+     * 使用 LinearLayout 作为根布局，包含一个 TextView 用于显示文本
+     * 布局支持 LinearLayout 和 RelativeLayout
+     * 控件支持 TextView 和 ImageView
+     */
     private fun buildBaseLayoutJson(): String {
         val textSizeStr = "${textSize.toInt()}sp"
         return """
@@ -187,7 +236,12 @@ object CxrCustomViewManager {
     private var pendingText: String? = null
 
     /**
-     * 尝试在蓝牙连接准备就绪时打开自定义页面。
+     * 尝试在蓝牙连接准备就绪时打开自定义页面
+     * 
+     * 参考文档：自定义页面场景.md 第1节 "打开自定义界面"
+     * 使用 openCustomView(content) 方法打开自定义页面
+     * 
+     * 注意：使用自定义页面前，请确保蓝牙连接已建立
      */
     fun ensureInitialized() {
         runCatching {
@@ -202,6 +256,8 @@ object CxrCustomViewManager {
                 Log.d(TAG, "Opening custom view...")
                 openRequested = true
                 val layoutJson = buildBaseLayoutJson()
+                // 参考文档：自定义页面场景.md 第1节
+                // openCustomView(content) 接受 JSON 描述字符串，返回 CxrStatus
                 val status = CxrApi.getInstance().openCustomView(layoutJson)
                 Log.d(TAG, "openCustomView status: $status")
                 if (status == ValueUtil.CxrStatus.REQUEST_FAILED) {
@@ -281,7 +337,10 @@ object CxrCustomViewManager {
     }
 
     /**
-     * 关闭眼镜端页面。
+     * 关闭眼镜端页面
+     * 
+     * 参考文档：自定义页面场景.md 第4节 "关闭界面"
+     * 使用 closeCustomView() 方法关闭自定义页面
      */
     fun close() {
         runCatching {
@@ -290,6 +349,7 @@ object CxrCustomViewManager {
             latestRawText = DEFAULT_EMPTY_TEXT
             openRequested = false
             viewReady = false
+            // 参考文档：自定义页面场景.md 第4节
             val status = CxrApi.getInstance().closeCustomView()
             Log.d(TAG, "closeCustomView status: $status")
         }.onFailure { throwable ->
@@ -299,29 +359,57 @@ object CxrCustomViewManager {
 
     fun isViewActive(): Boolean = viewReady
 
+    /**
+     * 注册自定义页面状态监听器
+     * 
+     * 参考文档：自定义页面场景.md 第2节 "监听界面状态"
+     * 使用 setCustomViewListener() 方法注册监听器，监听页面生命周期事件
+     */
     private fun registerListenerIfNeeded() {
         if (listenerRegistered) return
+        // 参考文档：自定义页面场景.md 第2节
+        // setCustomViewListener() 注册 CustomViewListener 监听器
         CxrApi.getInstance().setCustomViewListener(object : CustomViewListener {
+            /**
+             * 图标已下发回调
+             * 参考文档：自定义页面场景.md 第2节
+             */
             override fun onIconsSent() {
                 Log.d(TAG, "Custom view icons sent.")
             }
 
+            /**
+             * 页面已打开回调
+             * 参考文档：自定义页面场景.md 第2节
+             */
             override fun onOpened() {
                 Log.d(TAG, "Custom view opened.")
                 viewReady = true
                 deliverPendingTextIfNeeded()
             }
 
+            /**
+             * 打开失败回调
+             * 参考文档：自定义页面场景.md 第2节
+             */
             override fun onOpenFailed(errorCode: Int) {
                 Log.e(TAG, "Custom view open failed: $errorCode")
                 viewReady = false
                 openRequested = false
             }
 
+            /**
+             * 页面已更新回调
+             * 参考文档：自定义页面场景.md 第2节
+             */
             override fun onUpdated() {
                 Log.d(TAG, "Custom view updated.")
             }
 
+            /**
+             * 页面已关闭回调
+             * 参考文档：自定义页面场景.md 第2节
+             */
             override fun onClosed() {
                 Log.d(TAG, "Custom view closed.")
                 viewReady = false
@@ -338,9 +426,18 @@ object CxrCustomViewManager {
         }
     }
 
+    /**
+     * 发送文本到眼镜端视图
+     * 
+     * 参考文档：自定义页面场景.md 第3节 "更新界面"
+     * 使用 updateCustomView(content) 方法更新已打开界面的特定控件
+     * content 为 JSON 数组，指定操作类型、目标控件 ID 以及修改属性
+     */
     private fun sendTextToView(text: String) {
         val payload = buildUpdatePayload(text)
         val status = runCatching {
+            // 参考文档：自定义页面场景.md 第3节
+            // updateCustomView(content) 更新已打开界面的特定控件
             CxrApi.getInstance().updateCustomView(payload)
         }.onFailure { throwable ->
             Log.e(TAG, "updateCustomView error: ${throwable.message}", throwable)
@@ -387,6 +484,15 @@ object CxrCustomViewManager {
         }
     }
 
+    /**
+     * 构建更新 JSON 载荷
+     * 
+     * 参考文档：自定义页面场景.md 第3节 "更新界面" 和第7节 "更新布局 JSON"
+     * 更新时仅需传递变更项，使用 JSON 数组格式
+     * action: "update" 表示更新操作
+     * id: 目标控件 ID
+     * props: 要修改的属性
+     */
     private fun buildUpdatePayload(text: String): String {
         val jsonText = JSONObject.quote(text)
         return """

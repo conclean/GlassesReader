@@ -21,14 +21,41 @@ import androidx.lifecycle.MutableLiveData
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * 蓝牙设备扫描和发现辅助类。
- * 负责扫描 Rokid 眼镜设备，检查已配对和已连接的设备。
+ * 蓝牙设备扫描和发现辅助类
+ * 
+ * 【作用】
+ * 负责使用 Android 标准蓝牙接口扫描和发现 Rokid 眼镜设备。
+ * 这是连接流程的第一步，需要在调用 SDK 的 initBluetooth() 之前完成设备发现。
+ * 
+ * 【主要功能】
+ * 1. 扫描 BLE 设备，使用 Rokid 服务 UUID 过滤设备
+ * 2. 检查已配对和已连接的设备
+ * 3. 监听蓝牙状态变化
+ * 4. 管理扫描生命周期
+ * 
+ * 【参考文档】
+ * - 设备连接.md 第1节 "查找蓝牙设备"
+ *   - 使用 UUID: 00009100-0000-1000-8000-00805f9b34fb 过滤 Rokid 设备
+ *   - 通过 Android 标准 BluetoothAdapter 和 BluetoothLeScanner 进行扫描
+ * 
+ * 【使用流程】
+ * 1. 创建 BluetoothHelper 实例
+ * 2. 检查并请求蓝牙权限
+ * 3. 调用 startScan() 开始扫描
+ * 4. 通过 deviceFound LiveData 监听设备发现
+ * 5. 从 scanResultMap 或 bondedDeviceMap 获取设备
+ * 6. 将设备传递给 CxrConnectionManager 进行 SDK 连接
  */
 class BluetoothHelper(
     private val context: Context
 ) {
     companion object {
         private const val TAG = "BluetoothHelper"
+        /**
+         * Rokid 眼镜服务 UUID
+         * 参考文档：设备连接.md 第1节
+         * 用于在 BLE 扫描时过滤 Rokid 设备
+         */
         const val ROKID_SERVICE_UUID = "00009100-0000-1000-8000-00805f9b34fb"
     }
 
@@ -162,6 +189,8 @@ class BluetoothHelper(
         }
 
         // 开始 BLE 扫描
+        // 参考文档：设备连接.md 第1节
+        // 使用 Rokid 服务 UUID 过滤设备，只扫描包含该 UUID 的设备
         try {
             _initStatus.postValue(InitStatus.INITING)
             scanner?.startScan(

@@ -7,7 +7,7 @@ import android.view.accessibility.AccessibilityNodeInfo
 import com.app.glassesreader.accessibility.ScreenTextPublisher
 
 /**
- * ScreenTextService 透過無障礙事件擷取目前螢幕上的文字資訊。
+ * ScreenTextService 通过无障碍事件获取当前屏幕上的文字信息。
  */
 class ScreenTextService : AccessibilityService() {
 
@@ -54,7 +54,7 @@ class ScreenTextService : AccessibilityService() {
     }
 
     /**
-     * 判斷是否需要處理該事件類型。
+     * 判断是否需要处理该事件类型。
      */
     private fun shouldHandle(event: AccessibilityEvent): Boolean {
         return when (event.eventType) {
@@ -67,7 +67,7 @@ class ScreenTextService : AccessibilityService() {
     }
 
     /**
-     * 遞迴收集節點文字及描述資訊。
+     * 递归收集节点文字及描述信息。
      */
     private fun collectText(node: AccessibilityNodeInfo, container: MutableList<String>) {
         node.text?.toString()?.let { text ->
@@ -97,7 +97,7 @@ class ScreenTextService : AccessibilityService() {
     }
 
     /**
-     * 將收集的文字整理為去重、去空白的段落，若為空則退回事件本身的文字。
+     * 将收集的文字整理为去重、去空白的段落，若为空则退回事件本身的文字。
      */
     private fun buildSnapshot(
         lines: List<String>,

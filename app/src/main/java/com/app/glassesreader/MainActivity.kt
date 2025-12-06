@@ -16,6 +16,7 @@ import android.util.Log
 import android.view.accessibility.AccessibilityManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.compose.material3.AlertDialog
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -98,6 +99,7 @@ class MainActivity : ComponentActivity() {
     private var defaultTab by mutableStateOf(MainTab.SETUP)
     private var userDisabledService by mutableStateOf(false)
     private var overlayUIEnabled by mutableStateOf(false)
+    private var showAutoReconnectFailedDialog by mutableStateOf(false)
     private lateinit var appPrefs: SharedPreferences
     private val prefsListener =
         SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
@@ -148,6 +150,41 @@ class MainActivity : ComponentActivity() {
         readerEnabled = appPrefs.getBoolean(KEY_READER_ENABLED, false)
         glassBrightness = appPrefs.getInt(KEY_LAST_BRIGHTNESS, DEFAULT_BRIGHTNESS)
             .coerceIn(MIN_BRIGHTNESS, MAX_BRIGHTNESS)
+        
+        // 初始化连接管理器并尝试自动重连
+        connectionManager.init(this)
+        
+        // 延迟自动重连，等待权限检查完成
+        // 注意：重连时不需要 initBluetooth，直接使用 connectBluetooth
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            connectionManager.autoReconnect(object : CxrConnectionManager.ConnectionCallback {
+                override fun onConnected() {
+                    Log.d(LOG_TAG, "Auto reconnect succeeded")
+                    checkConnectionStatus()
+                }
+                
+                override fun onDisconnected() {
+                    Log.d(LOG_TAG, "Auto reconnect disconnected")
+                    checkConnectionStatus()
+                }
+                
+                override fun onFailed(errorCode: com.rokid.cxr.client.utils.ValueUtil.CxrBluetoothErrorCode?) {
+                    Log.d(LOG_TAG, "Auto reconnect failed: $errorCode")
+                    // 自动重连失败，显示弹窗提示用户手动连接
+                    showAutoReconnectFailedDialog = true
+                    checkConnectionStatus()
+                }
+                
+                override fun onConnectionInfo(
+                    socketUuid: String?,
+                    macAddress: String?,
+                    rokidAccount: String?,
+                    glassesType: Int
+                ) {
+                    // 连接信息更新
+                }
+            })
+        }, 1000) // 延迟 1 秒，确保应用初始化完成
         requiredSdkPermissions = createRequiredSdkPermissionArray()
         // 初始化 CxrCustomViewManager
         CxrCustomViewManager.init(this)
@@ -168,8 +205,19 @@ class MainActivity : ComponentActivity() {
                         onOverlaySettingChange = ::onOverlaySettingChange,
                         onShowMessage = ::showToast,
                         onBrightnessChange = ::onBrightnessChange,
-                        onRestartService = ::restartOverlayService
+                        onQuickReconnect = ::quickReconnect
                     )
+                    
+                    // 自动重连失败弹窗
+                    if (showAutoReconnectFailedDialog) {
+                        AutoReconnectFailedDialog(
+                            onDismiss = { showAutoReconnectFailedDialog = false },
+                            onNavigateToConnect = {
+                                showAutoReconnectFailedDialog = false
+                                defaultTab = MainTab.CONNECT
+                            }
+                        )
+                    }
                 }
             }
         }
@@ -272,9 +320,9 @@ class MainActivity : ComponentActivity() {
             return
         }
         if (!serviceRunning) {
-            TextOverlayService.start(this)
-            serviceRunning = true
-        }
+        TextOverlayService.start(this)
+        serviceRunning = true
+    }
         if (overlayUIEnabled) {
             TextOverlayService.enableOverlay(this)
         } else {
@@ -479,7 +527,8 @@ class MainActivity : ComponentActivity() {
             glassesConnected = glassesConnected,
             brightness = glassBrightness,
             customViewRunning = CxrCustomViewManager.isViewActive(),
-            toggleReasons = collectMissingReasons()
+            toggleReasons = collectMissingReasons(),
+            hasSavedConnectionInfo = connectionManager.hasSavedConnectionInfo()
         )
     }
 
@@ -522,36 +571,60 @@ class MainActivity : ComponentActivity() {
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
     }
 
-    private fun restartOverlayService() {
-        stopOverlayService(userInitiated = true)
-        startOverlayService(autoStarted = true)
-        
-        updateReaderAvailability()
-        showToast("正在重启服务")
-    }
-
-    private fun restartGlassService() {
-        val reasons = collectMissingReasons()
-        if (reasons.isNotEmpty()) {
-            showToast(reasons.joinToString("、"))
-            updateReaderAvailability()
+    /**
+     * 快速重连（使用已保存的连接参数）
+     * 逻辑与自动重连相同，但由用户手动触发
+     */
+    private fun quickReconnect() {
+        if (glassesConnected) {
+            showToast("已连接，无需重连")
             return
         }
-        if (!serviceRunning) {
-            startOverlayService(autoStarted = false)
-        } else {
-            if (overlayUIEnabled) {
-                TextOverlayService.enableOverlay(this)
-            }
+        
+        if (!connectionManager.hasSavedConnectionInfo()) {
+            showToast("没有保存的连接信息，请先扫描并连接设备")
+            return
         }
-        if (!readerEnabled) {
-            setReaderEnabled(true, userInitiated = true)
-        } else {
-            if (glassesConnected) {
-                CxrCustomViewManager.ensureInitialized()
+        
+        showToast("正在重连...")
+        connectionManager.autoReconnect(object : CxrConnectionManager.ConnectionCallback {
+            override fun onConnected() {
+                Log.d(LOG_TAG, "Quick reconnect succeeded")
+                checkConnectionStatus()
+                showToast("重连成功")
             }
-        }
-        showToast("正在重启服务")
+            
+            override fun onDisconnected() {
+                Log.d(LOG_TAG, "Quick reconnect disconnected")
+                checkConnectionStatus()
+            }
+            
+            override fun onFailed(errorCode: com.rokid.cxr.client.utils.ValueUtil.CxrBluetoothErrorCode?) {
+                Log.d(LOG_TAG, "Quick reconnect failed: $errorCode")
+                val message = when (errorCode) {
+                    com.rokid.cxr.client.utils.ValueUtil.CxrBluetoothErrorCode.BLE_CONNECT_FAILED -> {
+                        "重连失败：设备忙，请尝试扫描设备重新连接"
+                    }
+                    com.rokid.cxr.client.utils.ValueUtil.CxrBluetoothErrorCode.SOCKET_CONNECT_FAILED -> {
+                        "重连失败：Socket 连接失败，请尝试扫描设备重新连接"
+                    }
+                    else -> {
+                        "重连失败，请尝试扫描设备重新连接"
+                    }
+                }
+                showToast(message)
+                checkConnectionStatus()
+            }
+            
+            override fun onConnectionInfo(
+                socketUuid: String?,
+                macAddress: String?,
+                rokidAccount: String?,
+                glassesType: Int
+            ) {
+                // 连接信息更新
+            }
+        })
     }
 
     companion object {
@@ -582,7 +655,8 @@ private data class MainUiState(
     val glassesConnected: Boolean,
     val brightness: Int,
     val customViewRunning: Boolean,
-    val toggleReasons: List<String>
+    val toggleReasons: List<String>,
+    val hasSavedConnectionInfo: Boolean = false
 ) {
     val canToggleReader: Boolean
         get() = toggleReasons.isEmpty()
@@ -602,7 +676,7 @@ private fun MainScreen(
     onOverlaySettingChange: (Boolean) -> Unit,
     onShowMessage: (String) -> Unit,
     onBrightnessChange: (Int) -> Unit,
-    onRestartService: () -> Unit
+    onQuickReconnect: () -> Unit
 ) {
     val tabs = remember { MainTab.values().toList() }
     var selectedTab by rememberSaveable { mutableStateOf(defaultTab) }
@@ -630,9 +704,9 @@ private fun MainScreen(
         },
         floatingActionButtonPosition = FabPosition.End
     ) { innerPadding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
                 .padding(innerPadding)
         ) {
             TabRow(selectedTabIndex = selectedTab.ordinal) {
@@ -659,7 +733,7 @@ private fun MainScreen(
                     uiState = uiState,
                     modifier = Modifier.fillMaxSize(),
                     onOpenDeviceScan = onOpenDeviceScan,
-                    onRestartService = onRestartService
+                    onQuickReconnect = onQuickReconnect
                 )
 
                 MainTab.DISPLAY -> DisplayTabContent(
@@ -786,8 +860,8 @@ private fun SetupTabContent(
             description = "确保可以扫描并连接智能眼镜。",
             actionLabel = "授权权限",
             onAction = if (uiState.sdkPermissionsGranted) null else onRequestSdkPermissions
-        )
-    }
+            )
+        }
 }
 
 @Composable
@@ -795,7 +869,7 @@ private fun ConnectionTabContent(
     uiState: MainUiState,
     modifier: Modifier = Modifier,
     onOpenDeviceScan: () -> Unit,
-    onRestartService: () -> Unit
+    onQuickReconnect: () -> Unit
 ) {
     val scrollState = rememberScrollState()
     Column(
@@ -816,7 +890,7 @@ private fun ConnectionTabContent(
         )
 
         StatusListItem(
-            title = if (uiState.glassesConnected) "眼镜已连接" else "眼镜未连接",
+            title = if (uiState.glassesConnected) "眼镜已连接" else "眼镜未配对本应用",
             isCompleted = uiState.glassesConnected,
             description = if (uiState.glassesConnected) {
                 "当前已与眼镜建立连接，可在显示设置中调整样式。"
@@ -829,24 +903,23 @@ private fun ConnectionTabContent(
             onAction = if (uiState.sdkPermissionsGranted) onOpenDeviceScan else null
         )
 
-        StatusListItem(
-            title = if (uiState.readerEnabled && uiState.customViewRunning) "服务已启动" else "服务已暂停",
-            isCompleted = uiState.readerEnabled && uiState.customViewRunning,
-            description = if (uiState.readerEnabled && uiState.customViewRunning) {
-                "手机端读取服务和眼镜端自定义页面正在运行。"
-            } else {
-                "尝试重启眼镜连接后，恢复眼镜显示。"
-            },
-            actionLabel = if (uiState.glassesConnected) "重启眼镜连接" else null,
-            onAction = if (uiState.glassesConnected) onRestartService else null
-        )
-
-        if (uiState.glassesConnected && !uiState.customViewRunning) {
-            Text(
-                text = "服务已重启，请尝试开关按钮以恢复眼镜显示。",
-                style = MaterialTheme.typography.bodySmall,
+        // 快速重连按钮（针对已配对但未连接的设备）
+        // 始终显示，但根据是否有保存的连接信息来启用/禁用
+        if (!uiState.glassesConnected && uiState.sdkPermissionsGranted) {
+            StatusListItem(
+                title = "快速重连",
+                isCompleted = false,
+                description = if (uiState.hasSavedConnectionInfo) {
+                    "使用已保存的连接信息快速重连已配对的眼镜。"
+                } else {
+                    "暂无保存的连接信息，请先扫描并连接设备。"
+                },
+                actionLabel = "重连",
+                onAction = if (uiState.hasSavedConnectionInfo) onQuickReconnect else null,
+                actionEnabled = uiState.hasSavedConnectionInfo
             )
         }
+
     }
 }
 
@@ -862,7 +935,7 @@ private fun DisplayTabContent(
             .verticalScroll(scrollState)
             .padding(horizontal = 20.dp, vertical = 24.dp),
         verticalArrangement = Arrangement.spacedBy(20.dp)
-    ) {
+        ) {
         Text(
             text = "显示设置",
             style = MaterialTheme.typography.headlineSmall,
@@ -988,7 +1061,8 @@ private fun StatusListItem(
     isCompleted: Boolean,
     description: String? = null,
     actionLabel: String? = null,
-    onAction: (() -> Unit)?
+    onAction: (() -> Unit)? = null,
+    actionEnabled: Boolean = true
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -1017,9 +1091,10 @@ private fun StatusListItem(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            if (actionLabel != null && onAction != null) {
+            if (actionLabel != null) {
                 TextButton(
-                    onClick = onAction,
+                    onClick = onAction ?: {},
+                    enabled = actionEnabled && onAction != null,
                     contentPadding = PaddingValues(0.dp)
                 ) {
                     Text(text = actionLabel)
@@ -1038,8 +1113,8 @@ private fun TextSizeControl() {
     Surface(
         color = MaterialTheme.colorScheme.surfaceVariant,
         shape = MaterialTheme.shapes.medium,
-        modifier = Modifier.fillMaxWidth()
-    ) {
+            modifier = Modifier.fillMaxWidth()
+        ) {
         Column(
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -1059,7 +1134,7 @@ private fun TextSizeControl() {
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.primary
                 )
-            }
+        }
             Slider(
                 value = textSize,
                 onValueChange = { newSize ->
@@ -1104,8 +1179,8 @@ private fun TextProcessingControls() {
     Surface(
         color = MaterialTheme.colorScheme.surfaceVariant,
         shape = MaterialTheme.shapes.medium,
-        modifier = Modifier.fillMaxWidth()
-    ) {
+            modifier = Modifier.fillMaxWidth()
+        ) {
         Column(
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -1164,7 +1239,7 @@ private fun TextProcessingControls() {
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
+        Text(
                         text = "删除前 N 行",
                         style = MaterialTheme.typography.bodyMedium
                     )
@@ -1191,8 +1266,8 @@ private fun TextProcessingControls() {
                                 CxrCustomViewManager.setTextProcessingOptions(
                                     removeFirstLine = true,
                                     removeFirstLineCount = count
-                                )
-                            }
+        )
+    }
                         },
                         label = { Text("行数") },
                         modifier = Modifier.fillMaxWidth(),
@@ -1282,8 +1357,8 @@ private fun BrightnessControl(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
+    ) {
+        Text(
                     text = "眼镜亮度",
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Medium
@@ -1317,7 +1392,7 @@ private fun BrightnessControl(
                     text = "请连接智能眼镜后再调整亮度",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+        )
             }
         }
     }
@@ -1347,4 +1422,34 @@ private fun isAccessibilityServiceEnabled(
     }
     Log.d(MainActivity.LOG_TAG, "Accessibility match for $targetFullId/$targetShortId: $matched")
     return matched
+}
+
+/**
+ * 自动重连失败弹窗
+ * 提示用户前往设备连接页面手动连接设备
+ */
+@Composable
+private fun AutoReconnectFailedDialog(
+    onDismiss: () -> Unit,
+    onNavigateToConnect: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text("连接失败")
+        },
+        text = {
+            Text("自动重连失败，请前往设备连接页面手动连接设备")
+        },
+        confirmButton = {
+            TextButton(onClick = onNavigateToConnect) {
+                Text("前往连接")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("稍后")
+            }
+        }
+    )
 }
