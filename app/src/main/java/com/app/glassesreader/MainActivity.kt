@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -34,6 +35,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ErrorOutline
@@ -100,6 +102,7 @@ class MainActivity : ComponentActivity() {
     private var userDisabledService by mutableStateOf(false)
     private var overlayUIEnabled by mutableStateOf(false)
     private var showAutoReconnectFailedDialog by mutableStateOf(false)
+    private var isDarkTheme by mutableStateOf(false)
     private lateinit var appPrefs: SharedPreferences
     private val prefsListener =
         SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
@@ -150,6 +153,9 @@ class MainActivity : ComponentActivity() {
         readerEnabled = appPrefs.getBoolean(KEY_READER_ENABLED, false)
         glassBrightness = appPrefs.getInt(KEY_LAST_BRIGHTNESS, DEFAULT_BRIGHTNESS)
             .coerceIn(MIN_BRIGHTNESS, MAX_BRIGHTNESS)
+        // 读取主题设置，默认跟随系统
+        val systemDarkMode = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+        isDarkTheme = appPrefs.getBoolean(KEY_DARK_THEME, systemDarkMode)
         
         // 初始化连接管理器并尝试自动重连
         connectionManager.init(this)
@@ -188,10 +194,29 @@ class MainActivity : ComponentActivity() {
         requiredSdkPermissions = createRequiredSdkPermissionArray()
         // 初始化 CxrCustomViewManager
         CxrCustomViewManager.init(this)
+        // 设置自定义页面状态监听器，监听外部关闭事件
+        CxrCustomViewManager.setViewStateListener(object : CxrCustomViewManager.ViewStateListener {
+            override fun onViewStateChanged(isActive: Boolean) {
+                Log.d(LOG_TAG, "Custom view state changed: isActive=$isActive, readerEnabled=$readerEnabled")
+                // 如果页面被外部关闭（isActive=false），但读屏服务应该开启（readerEnabled=true）
+                // 说明页面被外部关闭了，需要同步状态或重新打开
+                if (!isActive && readerEnabled && glassesConnected) {
+                    Log.d(LOG_TAG, "Custom view closed externally, attempting to reopen...")
+                    // 延迟一点时间再尝试重新打开，避免频繁重试
+                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                        if (readerEnabled && glassesConnected && !CxrCustomViewManager.isViewActive()) {
+                            CxrCustomViewManager.ensureInitialized()
+                        }
+                    }, 500)
+                }
+                // 刷新 UI 状态
+                refreshPermissionStates()
+            }
+        })
         refreshPermissionStates()
         
         setContent {
-            GlassesReaderTheme {
+            GlassesReaderTheme(darkTheme = isDarkTheme) {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     MainScreen(
                         uiState = buildMainUiState(),
@@ -203,6 +228,7 @@ class MainActivity : ComponentActivity() {
                         onOpenDeviceScan = ::openDeviceScan,
                         onToggleService = ::onToggleReaderRequested,
                         onOverlaySettingChange = ::onOverlaySettingChange,
+                        onThemeChange = ::onThemeChange,
                         onShowMessage = ::showToast,
                         onBrightnessChange = ::onBrightnessChange
                     )
@@ -258,7 +284,12 @@ class MainActivity : ComponentActivity() {
 
         if (sdkPermissionsGranted) {
             checkConnectionStatus()
-            if (glassesConnected) {
+            if (glassesConnected && readerEnabled) {
+                // 只有当读屏服务开启且眼镜已连接时，才确保自定义页面打开
+                // 如果页面被外部关闭，这里会尝试重新打开
+                if (!CxrCustomViewManager.isViewActive()) {
+                    Log.d(LOG_TAG, "Reader enabled but view closed, ensuring initialized...")
+                }
                 CxrCustomViewManager.ensureInitialized()
             }
         } else {
@@ -425,6 +456,12 @@ class MainActivity : ComponentActivity() {
 
     private fun setReaderEnabled(enable: Boolean, userInitiated: Boolean) {
         if (enable == readerEnabled) {
+            // 即使状态相同，也要检查页面是否真的打开
+            // 如果应该开启但页面已关闭，需要重新打开
+            if (enable && glassesConnected && !CxrCustomViewManager.isViewActive()) {
+                Log.d(LOG_TAG, "Reader should be enabled but view is closed, reopening...")
+                CxrCustomViewManager.ensureInitialized()
+            }
             return
         }
         if (enable) {
@@ -433,6 +470,14 @@ class MainActivity : ComponentActivity() {
             readerEnabled = true
             if (userInitiated) {
                 userDisabledService = false
+            }
+            // 开启读屏时，确保自定义页面已打开
+            if (glassesConnected) {
+                // 检查页面状态，如果已关闭则重新打开
+                if (!CxrCustomViewManager.isViewActive()) {
+                    Log.d(LOG_TAG, "Opening custom view when enabling reader...")
+                    CxrCustomViewManager.ensureInitialized()
+                }
             }
         } else {
             TextOverlayService.disableReader(this)
@@ -527,7 +572,8 @@ class MainActivity : ComponentActivity() {
             brightness = glassBrightness,
             customViewRunning = CxrCustomViewManager.isViewActive(),
             toggleReasons = collectMissingReasons(),
-            hasSavedConnectionInfo = connectionManager.hasSavedConnectionInfo()
+            hasSavedConnectionInfo = connectionManager.hasSavedConnectionInfo(),
+            isDarkTheme = isDarkTheme
         )
     }
 
@@ -561,8 +607,11 @@ class MainActivity : ComponentActivity() {
                 TextOverlayService.disableOverlay(this)
             }
         }
-        maybeAutoControlReader()
-        updateReaderAvailability()
+    }
+
+    private fun onThemeChange(isDark: Boolean) {
+        isDarkTheme = isDark
+        appPrefs.edit().putBoolean(KEY_DARK_THEME, isDarkTheme).apply()
     }
 
     private fun showToast(message: String) {
@@ -578,6 +627,7 @@ class MainActivity : ComponentActivity() {
         private const val KEY_READER_ENABLED = "reader_enabled"
         private const val KEY_USER_DISABLED_READER = "user_disabled_reader"
         private const val KEY_LAST_BRIGHTNESS = "glass_brightness"
+        private const val KEY_DARK_THEME = "dark_theme"
     }
 }
 
@@ -600,7 +650,8 @@ private data class MainUiState(
     val brightness: Int,
     val customViewRunning: Boolean,
     val toggleReasons: List<String>,
-    val hasSavedConnectionInfo: Boolean = false
+    val hasSavedConnectionInfo: Boolean = false,
+    val isDarkTheme: Boolean = false
 ) {
     val canToggleReader: Boolean
         get() = toggleReasons.isEmpty()
@@ -618,6 +669,7 @@ private fun MainScreen(
     onOpenDeviceScan: () -> Unit,
     onToggleService: () -> Unit,
     onOverlaySettingChange: (Boolean) -> Unit,
+    onThemeChange: (Boolean) -> Unit,
     onShowMessage: (String) -> Unit,
     onBrightnessChange: (Int) -> Unit
 ) {
@@ -688,6 +740,7 @@ private fun MainScreen(
                     uiState = uiState,
                     modifier = Modifier.fillMaxSize(),
                     onToggleOverlay = onOverlaySettingChange,
+                    onThemeChange = onThemeChange,
                     onShowMessage = onShowMessage
                 )
             }
@@ -895,6 +948,7 @@ private fun SettingsTabContent(
     uiState: MainUiState,
     modifier: Modifier = Modifier,
     onToggleOverlay: (Boolean) -> Unit,
+    onThemeChange: (Boolean) -> Unit,
     onShowMessage: (String) -> Unit
 ) {
     Column(
@@ -973,8 +1027,38 @@ private fun SettingsTabContent(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                }
+                
+                // 主题切换开关
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = "夜间模式",
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            text = if (uiState.isDarkTheme) {
+                                "当前为夜间模式（深色主题）"
+                            } else {
+                                "当前为日间模式（浅色主题）"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = uiState.isDarkTheme,
+                        onCheckedChange = onThemeChange
+                    )
+                }
             }
-        }
         }
     }
 }

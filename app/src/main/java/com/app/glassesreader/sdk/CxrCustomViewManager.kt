@@ -77,6 +77,28 @@ object CxrCustomViewManager {
     private var context: Context? = null
 
     /**
+     * 页面状态变化监听器
+     * 用于通知外部页面状态的变化（打开/关闭）
+     */
+    interface ViewStateListener {
+        /**
+         * 页面状态变化回调
+         * @param isActive true 表示页面已打开，false 表示页面已关闭
+         */
+        fun onViewStateChanged(isActive: Boolean)
+    }
+
+    private var viewStateListener: ViewStateListener? = null
+
+    /**
+     * 设置页面状态变化监听器
+     * @param listener 监听器，传入 null 可取消监听
+     */
+    fun setViewStateListener(listener: ViewStateListener?) {
+        viewStateListener = listener
+    }
+
+    /**
      * 初始化，设置 Context 并加载保存的设置
      */
     fun init(context: Context) {
@@ -247,8 +269,13 @@ object CxrCustomViewManager {
         runCatching {
             if (!CxrApi.getInstance().isBluetoothConnected) {
                 Log.d(TAG, "Bluetooth not connected, skip opening custom view.")
+                val wasReady = viewReady
                 openRequested = false
                 viewReady = false
+                // 如果之前是打开状态，现在因为蓝牙断开而关闭，需要通知
+                if (wasReady) {
+                    viewStateListener?.onViewStateChanged(false)
+                }
                 return
             }
             registerListenerIfNeeded()
@@ -264,7 +291,21 @@ object CxrCustomViewManager {
                     openRequested = false
                 }
             } else if (viewReady) {
+                // 页面已打开且就绪，发送待处理的文本
                 deliverPendingTextIfNeeded()
+            } else {
+                // openRequested 为 true 但 viewReady 为 false
+                // 说明页面被外部关闭了（例如用户在眼镜端手动关闭），需要重新打开
+                Log.d(TAG, "View was closed externally (openRequested=true but viewReady=false), reopening...")
+                openRequested = false // 重置状态，允许重新打开
+                // 重新打开页面
+                val layoutJson = buildBaseLayoutJson()
+                openRequested = true
+                val status = CxrApi.getInstance().openCustomView(layoutJson)
+                Log.d(TAG, "Reopen custom view status: $status")
+                if (status == ValueUtil.CxrStatus.REQUEST_FAILED) {
+                    openRequested = false
+                }
             }
         }.onFailure { throwable ->
             Log.e(TAG, "ensureInitialized failed: ${throwable.message}", throwable)
@@ -352,6 +393,7 @@ object CxrCustomViewManager {
             // 参考文档：自定义页面场景.md 第4节
             val status = CxrApi.getInstance().closeCustomView()
             Log.d(TAG, "closeCustomView status: $status")
+            // 注意：onClosed() 回调会在 SDK 确认关闭后触发，这里不需要手动通知
         }.onFailure { throwable ->
             Log.e(TAG, "close custom view failed: ${throwable.message}", throwable)
         }
@@ -385,6 +427,7 @@ object CxrCustomViewManager {
             override fun onOpened() {
                 Log.d(TAG, "Custom view opened.")
                 viewReady = true
+                viewStateListener?.onViewStateChanged(true)
                 deliverPendingTextIfNeeded()
             }
 
@@ -396,6 +439,7 @@ object CxrCustomViewManager {
                 Log.e(TAG, "Custom view open failed: $errorCode")
                 viewReady = false
                 openRequested = false
+                viewStateListener?.onViewStateChanged(false)
             }
 
             /**
@@ -414,6 +458,7 @@ object CxrCustomViewManager {
                 Log.d(TAG, "Custom view closed.")
                 viewReady = false
                 openRequested = false
+                viewStateListener?.onViewStateChanged(false)
             }
         })
         listenerRegistered = true
