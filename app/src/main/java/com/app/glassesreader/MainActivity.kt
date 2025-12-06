@@ -902,7 +902,7 @@ private fun SettingsTabContent(
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 24.dp),
         verticalArrangement = Arrangement.spacedBy(20.dp)
-    ) {
+        ) {
         Text(
             text = "应用设置",
             style = MaterialTheme.typography.headlineSmall,
@@ -973,8 +973,8 @@ private fun SettingsTabContent(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                }
             }
+        }
         }
     }
 }
