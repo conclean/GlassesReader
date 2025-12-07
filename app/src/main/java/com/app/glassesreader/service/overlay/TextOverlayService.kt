@@ -130,7 +130,9 @@ class TextOverlayService : Service() {
             startCollectingText()
         } else {
             stopCollectingText()
-            CxrCustomViewManager.updateText("")
+            // 关闭读屏时，关闭眼镜端自定义页面
+            // 参考文档：自定义页面场景.md 第4节 "关闭界面"
+            CxrCustomViewManager.close()
         }
         updateNotification(isActive = isActive)
         prefs.edit().putBoolean(KEY_READER_ENABLED, isReadingActive).apply()
@@ -150,7 +152,8 @@ class TextOverlayService : Service() {
     private fun stopCollectingText() {
         textCollectJob?.cancel()
         textCollectJob = null
-        CxrCustomViewManager.updateText("")
+        // 注意：不再调用 updateText("")，因为关闭读屏时会调用 close() 关闭页面
+        // 如果只是停止收集文本但读屏仍然开启，页面会保持显示，不需要清空文本
     }
 
     private fun createNotificationChannel() {

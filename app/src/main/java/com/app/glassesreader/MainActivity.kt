@@ -103,6 +103,8 @@ class MainActivity : ComponentActivity() {
     private var overlayUIEnabled by mutableStateOf(false)
     private var showAutoReconnectFailedDialog by mutableStateOf(false)
     private var isDarkTheme by mutableStateOf(false)
+    // 标记用户是否正在主动操作，用于防止在用户开启时误触发自动关闭
+    private var isUserActivelyEnabling = false
     private lateinit var appPrefs: SharedPreferences
     private val prefsListener =
         SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
@@ -197,20 +199,42 @@ class MainActivity : ComponentActivity() {
         // 设置自定义页面状态监听器，监听外部关闭事件
         CxrCustomViewManager.setViewStateListener(object : CxrCustomViewManager.ViewStateListener {
             override fun onViewStateChanged(isActive: Boolean) {
-                Log.d(LOG_TAG, "Custom view state changed: isActive=$isActive, readerEnabled=$readerEnabled")
-                // 如果页面被外部关闭（isActive=false），但读屏服务应该开启（readerEnabled=true）
-                // 说明页面被外部关闭了，需要同步状态或重新打开
-                if (!isActive && readerEnabled && glassesConnected) {
-                    Log.d(LOG_TAG, "Custom view closed externally, attempting to reopen...")
-                    // 延迟一点时间再尝试重新打开，避免频繁重试
+                Log.d(LOG_TAG, "Custom view state changed: isActive=$isActive, readerEnabled=$readerEnabled, isUserActivelyEnabling=$isUserActivelyEnabling")
+                
+                // 如果用户正在主动开启读屏，忽略关闭事件（可能是 SDK 的残留状态回调）
+                if (!isActive && readerEnabled && glassesConnected && !isUserActivelyEnabling) {
+                    // 页面被外部关闭（用户在眼镜端手动关闭），但读屏服务应该开启
+                    // 有两种处理方式：
+                    // 1. 尝试重新打开页面（如果用户只是误操作）
+                    // 2. 关闭读屏服务，保持状态一致（如果用户确实想关闭）
+                    // 我们选择方式2：关闭读屏服务，因为用户手动关闭页面通常意味着想要停止读屏
+                    Log.d(LOG_TAG, "Custom view closed externally by user, disabling reader to sync state...")
+                    setReaderEnabled(false, userInitiated = false)
+                } else if (isActive && !readerEnabled && glassesConnected) {
+                    // 页面被外部打开（异常情况，通常不会发生）
+                    // 如果读屏服务未开启但页面打开了，保持当前状态，不自动开启读屏
+                    Log.d(LOG_TAG, "Custom view opened externally but reader is disabled, keeping state")
+                } else if (!isActive && isUserActivelyEnabling) {
+                    // 用户正在主动开启，但收到关闭事件，这可能是 SDK 的残留状态或初始化过程中的短暂关闭
+                    // 忽略此事件，等待页面成功打开并稳定
+                    Log.d(LOG_TAG, "Ignoring close event during user active enabling")
+                } else if (isActive && isUserActivelyEnabling) {
+                    // 页面成功打开，延迟重置标志，给 SDK 足够的初始化时间
+                    // 避免在初始化过程中短暂关闭时误触发自动关闭逻辑
+                    Log.d(LOG_TAG, "Custom view opened successfully, will reset user active enabling flag after delay")
                     android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                        if (readerEnabled && glassesConnected && !CxrCustomViewManager.isViewActive()) {
-                            CxrCustomViewManager.ensureInitialized()
+                        // 再次检查页面是否仍然打开，如果打开则重置标志
+                        if (CxrCustomViewManager.isViewActive() && readerEnabled) {
+                            isUserActivelyEnabling = false
+                            Log.d(LOG_TAG, "Custom view still active after delay, reset user active enabling flag")
+                        } else {
+                            Log.d(LOG_TAG, "Custom view closed during delay, keep flag for protection")
                         }
-                    }, 500)
+                    }, 2000) // 延迟 2 秒，给 SDK 足够的初始化时间
                 }
                 // 刷新 UI 状态
-                refreshPermissionStates()
+                // 注意：这里不调用 refreshPermissionStates()，因为它可能会触发 ensureInitialized()
+                // 但我们需要更新 UI，所以可以安全地更新状态变量
             }
         })
         refreshPermissionStates()
@@ -457,14 +481,27 @@ class MainActivity : ComponentActivity() {
     private fun setReaderEnabled(enable: Boolean, userInitiated: Boolean) {
         if (enable == readerEnabled) {
             // 即使状态相同，也要检查页面是否真的打开
-            // 如果应该开启但页面已关闭，需要重新打开
-            if (enable && glassesConnected && !CxrCustomViewManager.isViewActive()) {
+            // 如果应该开启但页面已关闭，需要重新打开（仅用户主动操作时）
+            if (enable && glassesConnected && !CxrCustomViewManager.isViewActive() && userInitiated) {
                 Log.d(LOG_TAG, "Reader should be enabled but view is closed, reopening...")
                 CxrCustomViewManager.ensureInitialized()
             }
             return
         }
         if (enable) {
+            // 标记用户正在主动开启，防止监听器误判
+            if (userInitiated) {
+                isUserActivelyEnabling = true
+                // 延迟重置标志，给页面打开足够的时间（5秒）
+                // 这个延迟作为保险机制，实际会在页面成功打开后通过 onViewStateChanged 延迟重置
+                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                    if (isUserActivelyEnabling) {
+                        isUserActivelyEnabling = false
+                        Log.d(LOG_TAG, "User active enabling flag reset (timeout)")
+                    }
+                }, 5000)
+            }
+            
             startOverlayService(autoStarted = true)
             TextOverlayService.enableReader(this)
             readerEnabled = true
@@ -480,6 +517,8 @@ class MainActivity : ComponentActivity() {
                 }
             }
         } else {
+            // 关闭时重置标志
+            isUserActivelyEnabling = false
             TextOverlayService.disableReader(this)
             readerEnabled = false
             if (userInitiated) {

@@ -250,12 +250,24 @@ object CxrCustomViewManager {
     private var openRequested = false
     @Volatile
     private var viewReady = false
+    // 记录最近一次打开请求的时间，用于在短时间内忽略关闭事件（防止初始化过程中的短暂关闭）
+    @Volatile private var lastOpenRequestTime: Long = 0
+    private const val OPEN_PROTECTION_MS = 3000L // 打开后3秒内的关闭事件将被忽略
     @Volatile
     private var latestText: String = DEFAULT_EMPTY_TEXT
     @Volatile
     private var latestRawText: String = DEFAULT_EMPTY_TEXT // 保存原始文本，用于重新处理
     @Volatile
     private var pendingText: String? = null
+    
+    // 防抖和重试控制
+    @Volatile
+    private var lastReopenAttemptTime: Long = 0
+    @Volatile
+    private var reopenAttemptCount: Int = 0
+    private const val REOPEN_DEBOUNCE_MS = 2000L // 2秒防抖
+    private const val MAX_REOPEN_ATTEMPTS = 3 // 最大重试次数
+    private const val REOPEN_RESET_INTERVAL_MS = 10000L // 10秒后重置计数器
 
     /**
      * 尝试在蓝牙连接准备就绪时打开自定义页面
@@ -282,6 +294,7 @@ object CxrCustomViewManager {
             if (!openRequested) {
                 Log.d(TAG, "Opening custom view...")
                 openRequested = true
+                lastOpenRequestTime = System.currentTimeMillis() // 记录打开请求时间
                 val layoutJson = buildBaseLayoutJson()
                 // 参考文档：自定义页面场景.md 第1节
                 // openCustomView(content) 接受 JSON 描述字符串，返回 CxrStatus
@@ -289,27 +302,54 @@ object CxrCustomViewManager {
                 Log.d(TAG, "openCustomView status: $status")
                 if (status == ValueUtil.CxrStatus.REQUEST_FAILED) {
                     openRequested = false
+                    lastOpenRequestTime = 0
                 }
             } else if (viewReady) {
                 // 页面已打开且就绪，发送待处理的文本
                 deliverPendingTextIfNeeded()
             } else {
                 // openRequested 为 true 但 viewReady 为 false
-                // 说明页面被外部关闭了（例如用户在眼镜端手动关闭），需要重新打开
-                Log.d(TAG, "View was closed externally (openRequested=true but viewReady=false), reopening...")
-                openRequested = false // 重置状态，允许重新打开
-                // 重新打开页面
-                val layoutJson = buildBaseLayoutJson()
-                openRequested = true
-                val status = CxrApi.getInstance().openCustomView(layoutJson)
-                Log.d(TAG, "Reopen custom view status: $status")
-                if (status == ValueUtil.CxrStatus.REQUEST_FAILED) {
-                    openRequested = false
-                }
+                // 说明页面被外部关闭了（例如用户在眼镜端手动关闭）
+                // 不在这里自动重试，避免循环，由外部通过 ensureInitializedWithRetry 控制重试
+                Log.d(TAG, "View was closed externally (openRequested=true but viewReady=false), resetting state...")
+                openRequested = false // 重置状态，允许外部重新打开
             }
         }.onFailure { throwable ->
             Log.e(TAG, "ensureInitialized failed: ${throwable.message}", throwable)
         }
+    }
+
+    /**
+     * 带防抖和重试限制的重新打开页面
+     * 用于处理页面被外部关闭的情况，避免频繁重试导致闪烁
+     */
+    fun ensureInitializedWithRetry(): Boolean {
+        val currentTime = System.currentTimeMillis()
+        
+        // 如果距离上次重试时间超过重置间隔，重置计数器
+        if (currentTime - lastReopenAttemptTime > REOPEN_RESET_INTERVAL_MS) {
+            reopenAttemptCount = 0
+        }
+        
+        // 检查防抖：如果距离上次重试时间太短，忽略本次请求
+        if (currentTime - lastReopenAttemptTime < REOPEN_DEBOUNCE_MS) {
+            Log.d(TAG, "Reopen attempt ignored due to debounce (${currentTime - lastReopenAttemptTime}ms ago)")
+            return false
+        }
+        
+        // 检查重试次数限制
+        if (reopenAttemptCount >= MAX_REOPEN_ATTEMPTS) {
+            Log.w(TAG, "Reopen attempt ignored: max attempts ($MAX_REOPEN_ATTEMPTS) reached")
+            return false
+        }
+        
+        // 更新重试时间和计数
+        lastReopenAttemptTime = currentTime
+        reopenAttemptCount++
+        
+        Log.d(TAG, "Attempting to reopen custom view (attempt $reopenAttemptCount/$MAX_REOPEN_ATTEMPTS)")
+        ensureInitialized()
+        return true
     }
 
     /**
@@ -427,6 +467,11 @@ object CxrCustomViewManager {
             override fun onOpened() {
                 Log.d(TAG, "Custom view opened.")
                 viewReady = true
+                // 重置重试计数器，因为页面已成功打开
+                reopenAttemptCount = 0
+                lastReopenAttemptTime = 0
+                // 页面成功打开后，更新保护时间，防止初始化过程中的短暂关闭
+                lastOpenRequestTime = System.currentTimeMillis()
                 viewStateListener?.onViewStateChanged(true)
                 deliverPendingTextIfNeeded()
             }
@@ -455,9 +500,20 @@ object CxrCustomViewManager {
              * 参考文档：自定义页面场景.md 第2节
              */
             override fun onClosed() {
+                val currentTime = System.currentTimeMillis()
+                val timeSinceOpen = currentTime - lastOpenRequestTime
+                
+                // 如果是在打开请求后短时间内关闭，可能是初始化过程中的短暂关闭，忽略此事件
+                if (lastOpenRequestTime > 0 && timeSinceOpen < OPEN_PROTECTION_MS) {
+                    Log.d(TAG, "Custom view closed shortly after open request (${timeSinceOpen}ms), ignoring (likely initialization transient)")
+                    // 不重置状态，等待页面真正打开
+                    return
+                }
+                
                 Log.d(TAG, "Custom view closed.")
                 viewReady = false
                 openRequested = false
+                lastOpenRequestTime = 0
                 viewStateListener?.onViewStateChanged(false)
             }
         })
