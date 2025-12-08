@@ -18,3 +18,7 @@ local.properties
 *.jks
 *.keystore
 keystore.properties
+
+# Logcat 文件
+logcat/
+*.logcat
