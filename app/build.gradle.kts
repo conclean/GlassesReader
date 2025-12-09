@@ -5,6 +5,9 @@ plugins {
 
 import java.util.Properties
 import java.io.FileInputStream
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 // 加载签名配置
 val keystorePropertiesFile = rootProject.file("keystore.properties")
@@ -23,8 +26,8 @@ android {
         applicationId = "com.app.glassesreader"
         minSdk = 29
         targetSdk = 35
-        versionCode = 4
-        versionName = "1.1.4"
+        versionCode = 6
+        versionName = "1.1.6"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -72,16 +75,23 @@ android {
         }
     }
     
-    // 自定义 APK 文件名
-    applicationVariants.all {
-        val variant = this
-        variant.outputs.all {
-            val output = this as com.android.build.gradle.internal.api.BaseVariantOutputImpl
-            val appName = "GlassesReader"
-            val versionName = variant.versionName
-            output.outputFileName = "${appName}_release_v${versionName}.apk"
-        }
-    }
+    // ===== 替换你现有的 applicationVariants.all { ... } 块 =====
+tasks.register<Copy>("archiveReleaseApk") {
+    group = "publishing"
+    description = "Build release APK and archive it to ./archives/"
+
+    dependsOn("assembleRelease")
+
+    from(layout.buildDirectory.dir("outputs/apk/release"))
+    include("*.apk")
+
+    val appName = "GlassesReader"
+    val versionName = android.defaultConfig.versionName
+    val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
+
+    into(layout.projectDirectory.dir("archives"))
+    rename(".*\\.apk", "${appName}_release_v${versionName}_${timestamp}.apk")
+}
 }
 
 configurations.all {

@@ -177,7 +177,7 @@ class MainActivity : ComponentActivity() {
         } catch (e: Exception) {
             Log.e(LOG_TAG, "Failed to get current version", e)
             // 如果获取失败，使用 build.gradle.kts 中的默认版本号
-            currentVersion = "1.1.3"
+            currentVersion = "1.1.5"
         }
         
         // 初始化连接管理器并尝试自动重连

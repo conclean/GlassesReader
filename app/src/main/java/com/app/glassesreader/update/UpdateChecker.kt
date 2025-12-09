@@ -16,8 +16,8 @@ object UpdateChecker {
     private const val GITHUB_OWNER = "conclean"
     private const val GITHUB_REPO = "GlassesReader"
     
-    // 官网下载链接（预留，后期使用）
-    private const val WEBSITE_DOWNLOAD_URL = "https://glassesreader.netlify.app/download" // 示例链接，需要替换为实际地址
+    // 官网下载链接
+    private const val WEBSITE_DOWNLOAD_URL = "https://glassesreader.conclean.top" 
     
     @Volatile
     private var apiInstance: GitHubReleaseApi? = null

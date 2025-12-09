@@ -23,3 +23,7 @@ jks/
 # Logcat 文件
 logcat/
 *.logcat
+
+# Keep archives locally, never commit
+archives/
+!archives/.gitkeep
