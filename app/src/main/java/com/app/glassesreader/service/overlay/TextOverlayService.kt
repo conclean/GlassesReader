@@ -1,5 +1,6 @@
 package com.app.glassesreader.service.overlay
 
+import android.app.ActivityManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -75,6 +76,21 @@ class TextOverlayService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // 确保前台通知已启动（防止 startForegroundService 后 onCreate 未及时调用的情况）
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    buildNotification(isActive = isReadingActive),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, buildNotification(isActive = isReadingActive))
+            }
+        } catch (e: Exception) {
+            // 如果已经启动过，忽略异常
+        }
+        
         when (intent?.action) {
             ACTION_STOP_SERVICE -> {
                 stopSelf()
@@ -281,28 +297,45 @@ class TextOverlayService : Service() {
             val intent = Intent(context, TextOverlayService::class.java).apply {
                 action = ACTION_ENABLE_READER
             }
-            ContextCompat.startForegroundService(context, intent)
+            // 如果服务已经在运行，使用 startService 而不是 startForegroundService
+            if (isServiceRunning(context)) {
+                context.startService(intent)
+            } else {
+                ContextCompat.startForegroundService(context, intent)
+            }
         }
 
         fun disableReader(context: Context) {
             val intent = Intent(context, TextOverlayService::class.java).apply {
                 action = ACTION_DISABLE_READER
             }
-            ContextCompat.startForegroundService(context, intent)
+            if (isServiceRunning(context)) {
+                context.startService(intent)
+            } else {
+                ContextCompat.startForegroundService(context, intent)
+            }
         }
 
         fun enableOverlay(context: Context) {
             val intent = Intent(context, TextOverlayService::class.java).apply {
                 action = ACTION_ENABLE_OVERLAY
             }
-            ContextCompat.startForegroundService(context, intent)
+            if (isServiceRunning(context)) {
+                context.startService(intent)
+            } else {
+                ContextCompat.startForegroundService(context, intent)
+            }
         }
 
         fun disableOverlay(context: Context) {
             val intent = Intent(context, TextOverlayService::class.java).apply {
                 action = ACTION_DISABLE_OVERLAY
             }
-            ContextCompat.startForegroundService(context, intent)
+            if (isServiceRunning(context)) {
+                context.startService(intent)
+            } else {
+                ContextCompat.startForegroundService(context, intent)
+            }
         }
 
         fun updateToggleAvailability(context: Context, enabled: Boolean, message: String?) {
@@ -311,7 +344,19 @@ class TextOverlayService : Service() {
                 putExtra(EXTRA_TOGGLE_ENABLED, enabled)
                 putExtra(EXTRA_TOGGLE_MESSAGE, message)
             }
-            ContextCompat.startForegroundService(context, intent)
+            if (isServiceRunning(context)) {
+                context.startService(intent)
+            } else {
+                ContextCompat.startForegroundService(context, intent)
+            }
+        }
+        
+        private fun isServiceRunning(context: Context): Boolean {
+            val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? android.app.ActivityManager
+                ?: return false
+            return activityManager.getRunningServices(Int.MAX_VALUE).any { service ->
+                service.service.className == TextOverlayService::class.java.name
+            }
         }
 
         fun stop(context: Context) {

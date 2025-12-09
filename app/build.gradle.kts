@@ -23,8 +23,8 @@ android {
         applicationId = "com.app.glassesreader"
         minSdk = 29
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.1.2"
+        versionCode = 3
+        versionName = "1.1.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -37,7 +37,7 @@ android {
             if (keystorePropertiesFile.exists()) {
                 keyAlias = keystoreProperties["keyAlias"] as String
                 keyPassword = keystoreProperties["keyPassword"] as String
-                storeFile = file(keystoreProperties["storeFile"] as String)
+                storeFile = rootProject.file(keystoreProperties["storeFile"] as String)
                 storePassword = keystoreProperties["storePassword"] as String
             }
         }
@@ -69,6 +69,17 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+    }
+    
+    // 自定义 APK 文件名
+    applicationVariants.all {
+        val variant = this
+        variant.outputs.all {
+            val output = this as com.android.build.gradle.internal.api.BaseVariantOutputImpl
+            val appName = "GlassesReader"
+            val versionName = variant.versionName
+            output.outputFileName = "${appName}_release_v${versionName}.apk"
         }
     }
 }

@@ -18,6 +18,7 @@ import android.view.accessibility.AccessibilityManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -70,6 +71,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.core.content.ContextCompat
 import com.app.glassesreader.accessibility.service.ScreenTextService
@@ -78,8 +80,13 @@ import com.app.glassesreader.sdk.CxrCustomViewManager
 import com.app.glassesreader.service.overlay.TextOverlayService
 import com.app.glassesreader.ui.screens.DeviceScanActivity
 import com.app.glassesreader.ui.theme.GlassesReaderTheme
+import com.app.glassesreader.update.UpdateChecker
+import com.app.glassesreader.update.UpdateResult
 import com.rokid.cxr.client.extend.CxrApi
 import com.rokid.cxr.client.utils.ValueUtil
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 private const val MIN_BRIGHTNESS = 0
@@ -105,6 +112,11 @@ class MainActivity : ComponentActivity() {
     private var isDarkTheme by mutableStateOf(false)
     // 标记用户是否正在主动操作，用于防止在用户开启时误触发自动关闭
     private var isUserActivelyEnabling = false
+    // 更新检查相关状态
+    private var currentVersion by mutableStateOf("")
+    private var checkingUpdate by mutableStateOf(false)
+    private var updateResult by mutableStateOf<UpdateResult?>(null)
+    private var showUpdateDialog by mutableStateOf(false)
     private lateinit var appPrefs: SharedPreferences
     private val prefsListener =
         SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
@@ -158,6 +170,15 @@ class MainActivity : ComponentActivity() {
         // 读取主题设置，默认跟随系统
         val systemDarkMode = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
         isDarkTheme = appPrefs.getBoolean(KEY_DARK_THEME, systemDarkMode)
+        
+        // 初始化版本号（使用 try-catch 确保即使失败也不会崩溃）
+        try {
+            currentVersion = UpdateChecker.getCurrentVersion(this)
+        } catch (e: Exception) {
+            Log.e(LOG_TAG, "Failed to get current version", e)
+            // 如果获取失败，使用 build.gradle.kts 中的默认版本号
+            currentVersion = "1.1.3"
+        }
         
         // 初始化连接管理器并尝试自动重连
         connectionManager.init(this)
@@ -245,6 +266,8 @@ class MainActivity : ComponentActivity() {
                     MainScreen(
                         uiState = buildMainUiState(),
                         defaultTab = defaultTab,
+                        currentVersion = currentVersion,
+                        checkingUpdate = checkingUpdate,
                         onRequestOverlay = ::openOverlaySettings,
                         onRequestAccessibility = ::openAccessibilitySettings,
                         onRequestNotification = ::requestNotificationPermission,
@@ -254,7 +277,8 @@ class MainActivity : ComponentActivity() {
                         onOverlaySettingChange = ::onOverlaySettingChange,
                         onThemeChange = ::onThemeChange,
                         onShowMessage = ::showToast,
-                        onBrightnessChange = ::onBrightnessChange
+                        onBrightnessChange = ::onBrightnessChange,
+                        onCheckUpdate = ::checkForUpdate
                     )
                     
                     // 自动重连失败弹窗
@@ -266,6 +290,24 @@ class MainActivity : ComponentActivity() {
                                 defaultTab = MainTab.CONNECT
                             }
                         )
+                    }
+                    
+                    // 更新对话框
+                    updateResult?.let { result ->
+                        if (showUpdateDialog && result is UpdateResult.NewVersionAvailable) {
+                            UpdateDialog(
+                                updateInfo = result,
+                                onDismiss = { showUpdateDialog = false },
+                                onOpenGitHub = {
+                                    showUpdateDialog = false
+                                    openGitHubRelease()
+                                },
+                                onOpenWebsite = {
+                                    showUpdateDialog = false
+                                    openWebsiteDownload()
+                                }
+                            )
+                        }
                     }
                 }
             }
@@ -657,6 +699,50 @@ class MainActivity : ComponentActivity() {
         if (message.isBlank()) return
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
     }
+    
+    private fun checkForUpdate() {
+        if (checkingUpdate) return
+        
+        checkingUpdate = true
+        CoroutineScope(Dispatchers.IO).launch {
+            val result = UpdateChecker.checkForUpdate(this@MainActivity)
+            CoroutineScope(Dispatchers.Main).launch {
+                checkingUpdate = false
+                updateResult = result
+                when (result) {
+                    is UpdateResult.NewVersionAvailable -> {
+                        showUpdateDialog = true
+                    }
+                    is UpdateResult.UpToDate -> {
+                        showToast("已是最新版本 (v${result.currentVersion})")
+                    }
+                    is UpdateResult.Error -> {
+                        showToast(result.message)
+                    }
+                }
+            }
+        }
+    }
+    
+    private fun openGitHubRelease() {
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(UpdateChecker.getGitHubReleaseUrl()))
+        try {
+            startActivity(intent)
+        } catch (e: Exception) {
+            Log.e(LOG_TAG, "Failed to open GitHub release page", e)
+            showToast("无法打开浏览器")
+        }
+    }
+    
+    private fun openWebsiteDownload() {
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(UpdateChecker.getWebsiteDownloadUrl()))
+        try {
+            startActivity(intent)
+        } catch (e: Exception) {
+            Log.e(LOG_TAG, "Failed to open website download page", e)
+            showToast("无法打开浏览器")
+        }
+    }
 
 
     companion object {
@@ -701,6 +787,8 @@ private data class MainUiState(
 private fun MainScreen(
     uiState: MainUiState,
     defaultTab: MainTab,
+    currentVersion: String,
+    checkingUpdate: Boolean,
     onRequestOverlay: () -> Unit,
     onRequestAccessibility: () -> Unit,
     onRequestNotification: () -> Unit,
@@ -710,7 +798,8 @@ private fun MainScreen(
     onOverlaySettingChange: (Boolean) -> Unit,
     onThemeChange: (Boolean) -> Unit,
     onShowMessage: (String) -> Unit,
-    onBrightnessChange: (Int) -> Unit
+    onBrightnessChange: (Int) -> Unit,
+    onCheckUpdate: () -> Unit
 ) {
     val tabs = remember { MainTab.values().toList() }
     var selectedTab by rememberSaveable { mutableStateOf(defaultTab) }
@@ -778,9 +867,12 @@ private fun MainScreen(
                 MainTab.SETTINGS -> SettingsTabContent(
                     uiState = uiState,
                     modifier = Modifier.fillMaxSize(),
+                    currentVersion = currentVersion,
+                    checkingUpdate = checkingUpdate,
                     onToggleOverlay = onOverlaySettingChange,
                     onThemeChange = onThemeChange,
-                    onShowMessage = onShowMessage
+                    onShowMessage = onShowMessage,
+                    onCheckUpdate = onCheckUpdate
                 )
             }
         }
@@ -986,9 +1078,12 @@ private fun DisplayTabContent(
 private fun SettingsTabContent(
     uiState: MainUiState,
     modifier: Modifier = Modifier,
+    currentVersion: String,
+    checkingUpdate: Boolean,
     onToggleOverlay: (Boolean) -> Unit,
     onThemeChange: (Boolean) -> Unit,
-    onShowMessage: (String) -> Unit
+    onShowMessage: (String) -> Unit,
+    onCheckUpdate: () -> Unit
 ) {
     Column(
         modifier = modifier
@@ -1096,6 +1191,33 @@ private fun SettingsTabContent(
                         checked = uiState.isDarkTheme,
                         onCheckedChange = onThemeChange
                     )
+                }
+                
+                // 版本信息和检查更新
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "版本信息",
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        text = "当前版本：v$currentVersion",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    TextButton(
+                        onClick = onCheckUpdate,
+                        enabled = !checkingUpdate,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = if (checkingUpdate) "检查更新中..." else "检查更新",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
                 }
             }
         }
@@ -1499,4 +1621,96 @@ private fun AutoReconnectFailedDialog(
             }
         }
     )
+}
+
+/**
+ * 更新对话框
+ * 显示新版本信息并提供下载选项
+ */
+@Composable
+private fun UpdateDialog(
+    updateInfo: UpdateResult.NewVersionAvailable,
+    onDismiss: () -> Unit,
+    onOpenGitHub: () -> Unit,
+    onOpenWebsite: () -> Unit
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = MaterialTheme.shapes.large,
+            color = MaterialTheme.colorScheme.surface,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(24.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Text(
+                    text = "发现新版本",
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold
+                )
+                
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "当前版本：v${updateInfo.currentVersion}",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Text(
+                        text = "最新版本：v${updateInfo.latestVersion}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    if (updateInfo.releaseNotes.isNotBlank()) {
+                        Text(
+                            text = "更新内容：",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier.padding(top = 8.dp)
+                        )
+                        Text(
+                            text = updateInfo.releaseNotes.take(200) + if (updateInfo.releaseNotes.length > 200) "..." else "",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Text(
+                        text = "\n提示：建议使用官网下载链接，访问更稳定。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = onOpenWebsite,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("官网下载（推荐）")
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        TextButton(
+                            onClick = onOpenGitHub,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("GitHub")
+                        }
+                        TextButton(
+                            onClick = onDismiss,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("稍后")
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
