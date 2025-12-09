@@ -1,7 +1,10 @@
 package com.app.glassesreader.ui.screens
 
 import android.bluetooth.BluetoothDevice
+import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
+import android.content.res.Configuration
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -51,6 +54,8 @@ class DeviceScanActivity : ComponentActivity() {
         private const val VERIFICATION_DELAY_MS = 1000L
         // 成功提示显示时间
         private const val SUCCESS_DELAY_MS = 2000L
+        private const val PREF_APP_SETTINGS = "gr_app_settings"
+        private const val KEY_DARK_THEME = "dark_theme"
     }
 
     private var isScanning by mutableStateOf(false)
@@ -59,6 +64,7 @@ class DeviceScanActivity : ComponentActivity() {
     private var connectionStatus by mutableStateOf<String?>(null)
     private var bluetoothHelper: BluetoothHelper? = null
     private val connectionManager = CxrConnectionManager.getInstance()
+    private lateinit var appPrefs: SharedPreferences
     
     // Handler 用于延迟任务，需要在 onDestroy 中清理
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -79,6 +85,11 @@ class DeviceScanActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // 读取主题设置
+        appPrefs = getSharedPreferences(PREF_APP_SETTINGS, Context.MODE_PRIVATE)
+        val systemDarkMode = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+        val isDarkTheme = appPrefs.getBoolean(KEY_DARK_THEME, systemDarkMode)
 
         // 注册生命周期监听
         lifecycle.addObserver(object : LifecycleEventObserver {
@@ -106,7 +117,7 @@ class DeviceScanActivity : ComponentActivity() {
         checkConnectionStatus()
 
         setContent {
-            GlassesReaderTheme {
+            GlassesReaderTheme(darkTheme = isDarkTheme) {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     DeviceScanScreen(
                         isScanning = isScanning,
