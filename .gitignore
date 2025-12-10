@@ -27,3 +27,5 @@ logcat/
 # Keep archives locally, never commit
 archives/
 !archives/.gitkeep
+
+*.cursorrules

@@ -1,13 +1,17 @@
-# GlassesReader
-
 <div align="center">
 
-**一款将手机屏幕文字实时同步到 Rokid 智能眼镜的 Android 应用。无需开发线，安卓手机安装即可使用**
+  <img src="app-icon.png" alt="GlassesReader App Icon" width="120" />
 
-[![Kotlin](https://img.shields.io/badge/Kotlin-1.9.0-blue.svg)](https://kotlinlang.org/)
-[![Android](https://img.shields.io/badge/Android-10%2B-green.svg)](https://www.android.com/)
-[![Compose](https://img.shields.io/badge/Jetpack%20Compose-1.5.1-orange.svg)](https://developer.android.com/jetpack/compose)
-[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+  # GlassesReader
+
+  **一款将手机屏幕文字实时同步到 Rokid 智能眼镜的 Android 应用。无需开发线，安卓手机安装即可使用**
+
+  [![Kotlin](https://img.shields.io/badge/Kotlin-1.9.0-blue.svg)](https://kotlinlang.org/)
+  [![Android](https://img.shields.io/badge/Android-12%2B-green.svg)](https://www.android.com/)
+  [![Compose](https://img.shields.io/badge/Jetpack%20Compose-1.5.1-orange.svg)](https://developer.android.com/jetpack/compose)
+  [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+  <img src="info.png" alt="功能示意图" width="600" />
 
 </div>
 
