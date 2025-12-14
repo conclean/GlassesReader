@@ -37,16 +37,17 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.ErrorOutline
-import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.PlayArrow
+// import androidx.compose.material.icons.Icons
+// import androidx.compose.material.icons.filled.CheckCircle
+// import androidx.compose.material.icons.filled.ErrorOutline
+// import androidx.compose.material.icons.filled.Pause
+// import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FabPosition
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LargeFloatingActionButton
+import androidx.compose.ui.res.painterResource
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -917,14 +918,17 @@ private fun ServiceFab(
         shape = CircleShape
     ) {
         Icon(
-            imageVector = when {
-            readerEnabled -> Icons.Filled.Pause
-            else -> Icons.Filled.PlayArrow
-            },
+            painter = painterResource(
+                id = when {
+                    readerEnabled -> R.drawable.ic_pause
+                    else -> R.drawable.ic_play_arrow
+                }
+            ),
             contentDescription = when {
                 readerEnabled -> "暂停读屏服务"
                 else -> "启动读屏服务"
             },
+            tint = contentColor,
             modifier = Modifier.size(36.dp)
         )
     }
@@ -1211,8 +1215,8 @@ private fun SettingsTabContent(
                     TextButton(
                         onClick = onCheckUpdate,
                         enabled = !checkingUpdate,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
+                modifier = Modifier.fillMaxWidth()
+            ) {
                         Text(
                             text = if (checkingUpdate) "检查更新中..." else "检查更新",
                             style = MaterialTheme.typography.bodyMedium
@@ -1239,9 +1243,12 @@ private fun StatusListItem(
         verticalAlignment = Alignment.Top
     ) {
         Icon(
-            imageVector = if (isCompleted) Icons.Filled.CheckCircle else Icons.Filled.ErrorOutline,
+            painter = painterResource(
+                id = if (isCompleted) R.drawable.ic_check_circle else R.drawable.ic_error_outline
+            ),
             contentDescription = null,
-            tint = if (isCompleted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+            tint = if (isCompleted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+            modifier = Modifier.size(24.dp)
         )
         Column(
             modifier = Modifier.weight(1f),
