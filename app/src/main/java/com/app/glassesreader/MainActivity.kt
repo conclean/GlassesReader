@@ -24,6 +24,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import com.app.glassesreader.accessibility.service.ScreenTextService
+import com.app.glassesreader.data.TextPreset
+import com.app.glassesreader.data.TextPresetManager
 import com.app.glassesreader.sdk.CxrConnectionManager
 import com.app.glassesreader.sdk.CxrCustomViewManager
 import com.app.glassesreader.service.overlay.TextOverlayService
@@ -71,6 +73,10 @@ class MainActivity : ComponentActivity() {
     // 自动更新检查相关状态
     private var autoUpdateCheckResult by mutableStateOf<UpdateResult?>(null)
     private var showAutoUpdateReminderDialog by mutableStateOf(false)
+    // 预设管理相关状态
+    private lateinit var presetManager: TextPresetManager
+    private var presets by mutableStateOf<List<TextPreset>>(emptyList())
+    private var currentPresetId by mutableStateOf<String?>(null)
     private lateinit var appPrefs: SharedPreferences
     private val prefsListener =
         SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
@@ -171,6 +177,12 @@ class MainActivity : ComponentActivity() {
         requiredSdkPermissions = createRequiredSdkPermissionArray()
         // 初始化 CxrCustomViewManager
         CxrCustomViewManager.init(this)
+        
+        // 初始化预设管理器
+        presetManager = TextPresetManager.getInstance(this)
+        presetManager.initializeIfNeeded()
+        presets = presetManager.getAllPresets()
+        currentPresetId = presetManager.getCurrentPresetId()
         // 设置自定义页面状态监听器，监听外部关闭事件
         CxrCustomViewManager.setViewStateListener(object : CxrCustomViewManager.ViewStateListener {
             override fun onViewStateChanged(isActive: Boolean) {
@@ -217,6 +229,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             GlassesReaderTheme(darkTheme = isDarkTheme) {
                 Surface(modifier = Modifier.fillMaxSize()) {
+                    // 在 Compose 作用域内调用，确保状态更新时自动重组
                     MainScreen(
                         uiState = buildMainUiState(),
                         defaultTab = defaultTab,
@@ -232,7 +245,13 @@ class MainActivity : ComponentActivity() {
                         onThemeChange = ::onThemeChange,
                         onShowMessage = ::showToast,
                         onBrightnessChange = ::onBrightnessChange,
-                        onCheckUpdate = ::checkForUpdate
+                        onCheckUpdate = ::checkForUpdate,
+                        onSettingChanged = {
+                            // 实时保存到当前预设
+                            if (this::presetManager.isInitialized) {
+                                presetManager.saveCurrentSettingsToCurrentPreset(glassBrightness)
+                            }
+                        }
                     )
                     
                     // 自动重连失败弹窗
@@ -599,6 +618,10 @@ class MainActivity : ComponentActivity() {
         appPrefs.edit().putInt(KEY_LAST_BRIGHTNESS, clamped).apply()
         brightnessSynced = false
         pushBrightnessToGlass(clamped)
+        // 实时保存到当前预设
+        if (this::presetManager.isInitialized) {
+            presetManager.saveCurrentSettingsToCurrentPreset(clamped)
+        }
     }
 
     private fun pushBrightnessToGlass(value: Int) {
@@ -629,8 +652,59 @@ class MainActivity : ComponentActivity() {
             customViewRunning = CxrCustomViewManager.isViewActive(),
             toggleReasons = collectMissingReasons(),
             hasSavedConnectionInfo = connectionManager.hasSavedConnectionInfo(),
-            isDarkTheme = isDarkTheme
+            isDarkTheme = isDarkTheme,
+            presets = presets,
+            currentPresetId = currentPresetId,
+            onPresetSelected = ::onPresetSelected,
+            onPresetLongPress = { /* 由UI处理 */ },
+            onCreatePreset = ::onCreatePreset,
+            onRenamePreset = ::onRenamePreset,
+            onDeletePreset = ::onDeletePreset
         )
+    }
+    
+    private fun onPresetSelected(presetId: String) {
+        if (presetManager.switchToPreset(presetId)) {
+            currentPresetId = presetId
+            presets = presetManager.getAllPresets()
+            // 更新亮度状态
+            val preset = presetManager.getPresetById(presetId)
+            if (preset != null) {
+                glassBrightness = preset.brightness
+            }
+        }
+    }
+    
+    private fun onCreatePreset(name: String) {
+        val newPreset = presetManager.createPreset(name, glassBrightness)
+        if (newPreset != null) {
+            presets = presetManager.getAllPresets()
+            currentPresetId = newPreset.id
+            showToast("已创建预设：$name")
+        } else {
+            showToast("创建失败：名称已存在或无效")
+        }
+    }
+    
+    private fun onRenamePreset(presetId: String, newName: String) {
+        val preset = presetManager.getPresetById(presetId) ?: return
+        val updatedPreset = preset.copy(name = newName)
+        if (presetManager.updatePreset(updatedPreset)) {
+            presets = presetManager.getAllPresets()
+            showToast("已重命名为：$newName")
+        } else {
+            showToast("重命名失败：名称已存在或无效")
+        }
+    }
+    
+    private fun onDeletePreset(presetId: String) {
+        if (presetManager.deletePreset(presetId)) {
+            presets = presetManager.getAllPresets()
+            currentPresetId = presetManager.getCurrentPresetId()
+            showToast("已删除预设")
+        } else {
+            showToast("删除失败：至少保留一个预设")
+        }
     }
 
     private fun onToggleReaderRequested() {

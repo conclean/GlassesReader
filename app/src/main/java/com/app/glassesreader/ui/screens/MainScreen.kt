@@ -33,7 +33,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.app.glassesreader.data.TextPreset
 import com.app.glassesreader.ui.components.BrightnessControl
+import com.app.glassesreader.ui.components.CreatePresetDialog
+import com.app.glassesreader.ui.components.EditPresetDialog
+import com.app.glassesreader.ui.components.PresetTabRow
 import com.app.glassesreader.ui.components.ServiceFab
 import com.app.glassesreader.ui.components.StatusListItem
 import com.app.glassesreader.ui.components.TextProcessingControls
@@ -61,7 +65,8 @@ fun MainScreen(
     onThemeChange: (Boolean) -> Unit,
     onShowMessage: (String) -> Unit,
     onBrightnessChange: (Int) -> Unit,
-    onCheckUpdate: () -> Unit
+    onCheckUpdate: () -> Unit,
+    onSettingChanged: () -> Unit = {}
 ) {
     val tabs = remember { MainTab.values().toList() }
     var selectedTab by rememberSaveable { mutableStateOf(defaultTab) }
@@ -123,7 +128,16 @@ fun MainScreen(
                 MainTab.DISPLAY -> DisplayTabContent(
                     uiState = uiState,
                     modifier = Modifier.fillMaxSize(),
-                    onBrightnessChange = onBrightnessChange
+                    onBrightnessChange = onBrightnessChange,
+                    onShowMessage = onShowMessage,
+                    presets = uiState.presets,
+                    currentPresetId = uiState.currentPresetId,
+                    onPresetSelected = uiState.onPresetSelected,
+                    onPresetLongPress = uiState.onPresetLongPress,
+                    onCreatePreset = uiState.onCreatePreset,
+                    onRenamePreset = uiState.onRenamePreset,
+                    onDeletePreset = uiState.onDeletePreset,
+                    onSettingChanged = onSettingChanged
                 )
 
                 MainTab.SETTINGS -> SettingsTabContent(
@@ -254,8 +268,20 @@ private fun ConnectionTabContent(
 private fun DisplayTabContent(
     uiState: MainUiState,
     modifier: Modifier = Modifier,
-    onBrightnessChange: (Int) -> Unit
+    onBrightnessChange: (Int) -> Unit,
+    onShowMessage: (String) -> Unit,
+    presets: List<TextPreset>,
+    currentPresetId: String?,
+    onPresetSelected: (String) -> Unit,
+    onPresetLongPress: (TextPreset) -> Unit,
+    onCreatePreset: (String) -> Unit,
+    onRenamePreset: (String, String) -> Unit,
+    onDeletePreset: (String) -> Unit,
+    onSettingChanged: () -> Unit
 ) {
+    var showCreateDialog by remember { mutableStateOf(false) }
+    var editingPreset by remember { mutableStateOf<TextPreset?>(null) }
+    
     val scrollState = rememberScrollState()
     Column(
         modifier = modifier
@@ -263,10 +289,21 @@ private fun DisplayTabContent(
             .padding(horizontal = 20.dp, vertical = 24.dp),
         verticalArrangement = Arrangement.spacedBy(20.dp)
     ) {
-        Text(
-            text = "显示设置",
-            style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.Bold
+        // 预设标签栏
+        PresetTabRow(
+            presets = presets,
+            currentPresetId = currentPresetId,
+            onPresetSelected = { presetId ->
+                onPresetSelected(presetId)
+                onShowMessage("已切换到：${presets.find { it.id == presetId }?.name ?: ""}")
+            },
+            onPresetLongPress = { preset ->
+                editingPreset = preset
+                onPresetLongPress(preset) // 调用传入的回调
+            },
+            onCreateNew = {
+                showCreateDialog = true
+            }
         )
 
         if (!uiState.glassesConnected) {
@@ -288,8 +325,40 @@ private fun DisplayTabContent(
             onBrightnessChange = onBrightnessChange
         )
 
-        TextSizeControl()
-        TextProcessingControls()
+        TextSizeControl(
+            currentPresetId = currentPresetId,
+            onSettingChanged = onSettingChanged
+        )
+        TextProcessingControls(
+            currentPresetId = currentPresetId,
+            onSettingChanged = onSettingChanged
+        )
+    }
+    
+    // 新建预设对话框
+    if (showCreateDialog) {
+        CreatePresetDialog(
+            onDismiss = { showCreateDialog = false },
+            onCreate = { name ->
+                onCreatePreset(name)
+                showCreateDialog = false
+            }
+        )
+    }
+    
+    // 编辑预设对话框
+    editingPreset?.let { preset ->
+        EditPresetDialog(
+            preset = preset,
+            canDelete = presets.size > 1,
+            onDismiss = { editingPreset = null },
+            onRename = { newName ->
+                onRenamePreset(preset.id, newName)
+            },
+            onDelete = {
+                onDeletePreset(preset.id)
+            }
+        )
     }
 }
 

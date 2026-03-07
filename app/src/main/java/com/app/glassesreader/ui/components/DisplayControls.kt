@@ -29,9 +29,17 @@ import kotlin.math.roundToInt
  * 文字大小控制组件
  */
 @Composable
-fun TextSizeControl() {
-    var textSize by remember {
+fun TextSizeControl(
+    currentPresetId: String? = null, // 添加预设ID作为key，当预设切换时重新读取
+    onSettingChanged: () -> Unit = {}
+) {
+    var textSize by remember(currentPresetId) {
         mutableStateOf(CxrCustomViewManager.getTextSize())
+    }
+    
+    // 当预设切换时，同步更新状态
+    androidx.compose.runtime.LaunchedEffect(currentPresetId) {
+        textSize = CxrCustomViewManager.getTextSize()
     }
 
     Surface(
@@ -64,6 +72,7 @@ fun TextSizeControl() {
                 onValueChange = { newSize ->
                     textSize = newSize
                     CxrCustomViewManager.setTextSize(newSize)
+                    onSettingChanged()
                 },
                 valueRange = 12f..48f,
                 steps = 35, // 12-48 共 36 个值，steps = 35
@@ -82,25 +91,39 @@ fun TextSizeControl() {
  * 文本处理控制组件
  */
 @Composable
-fun TextProcessingControls() {
+fun TextProcessingControls(
+    currentPresetId: String? = null, // 添加预设ID作为key，当预设切换时重新读取
+    onSettingChanged: () -> Unit = {}
+) {
     val options = CxrCustomViewManager.getTextProcessingOptions()
-    var removeEmptyLines by remember { 
+    var removeEmptyLines by remember(currentPresetId) { 
         mutableStateOf(options.removeEmptyLines) 
     }
-    var removeLineBreaks by remember { 
+    var removeLineBreaks by remember(currentPresetId) { 
         mutableStateOf(options.removeLineBreaks) 
     }
-    var removeFirstLine by remember { 
+    var removeFirstLine by remember(currentPresetId) { 
         mutableStateOf(options.removeFirstLine) 
     }
-    var removeLastLine by remember { 
+    var removeLastLine by remember(currentPresetId) { 
         mutableStateOf(options.removeLastLine) 
     }
-    var removeFirstLineCount by remember { 
+    var removeFirstLineCount by remember(currentPresetId) { 
         mutableStateOf(options.removeFirstLineCount.toString()) 
     }
-    var removeLastLineCount by remember { 
+    var removeLastLineCount by remember(currentPresetId) { 
         mutableStateOf(options.removeLastLineCount.toString()) 
+    }
+    
+    // 当预设切换时，同步更新状态
+    androidx.compose.runtime.LaunchedEffect(currentPresetId) {
+        val currentOptions = CxrCustomViewManager.getTextProcessingOptions()
+        removeEmptyLines = currentOptions.removeEmptyLines
+        removeLineBreaks = currentOptions.removeLineBreaks
+        removeFirstLine = currentOptions.removeFirstLine
+        removeLastLine = currentOptions.removeLastLine
+        removeFirstLineCount = currentOptions.removeFirstLineCount.toString()
+        removeLastLineCount = currentOptions.removeLastLineCount.toString()
     }
 
     Surface(
@@ -133,6 +156,7 @@ fun TextProcessingControls() {
                     onCheckedChange = {
                         removeEmptyLines = it
                         CxrCustomViewManager.setTextProcessingOptions(removeEmptyLines = it)
+                        onSettingChanged()
                     }
                 )
             }
@@ -152,6 +176,7 @@ fun TextProcessingControls() {
                     onCheckedChange = {
                         removeLineBreaks = it
                         CxrCustomViewManager.setTextProcessingOptions(removeLineBreaks = it)
+                        onSettingChanged()
                     }
                 )
             }
@@ -179,6 +204,7 @@ fun TextProcessingControls() {
                                 removeFirstLine = it,
                                 removeFirstLineCount = count
                             )
+                            onSettingChanged()
                         }
                     )
                 }
@@ -194,6 +220,7 @@ fun TextProcessingControls() {
                                     removeFirstLine = true,
                                     removeFirstLineCount = count
                                 )
+                                onSettingChanged()
                             }
                         },
                         label = { Text("行数") },
@@ -229,6 +256,7 @@ fun TextProcessingControls() {
                                 removeLastLine = it,
                                 removeLastLineCount = count
                             )
+                            onSettingChanged()
                         }
                     )
                 }
@@ -244,6 +272,7 @@ fun TextProcessingControls() {
                                     removeLastLine = true,
                                     removeLastLineCount = count
                                 )
+                                onSettingChanged()
                             }
                         },
                         label = { Text("行数") },
