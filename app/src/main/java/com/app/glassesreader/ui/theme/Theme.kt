@@ -9,28 +9,33 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 
 private val DarkColorScheme = darkColorScheme(
-    primary = Blue80,
+    primary = DarkPrimary,                    // 关键按钮、开关按钮背景色
+    onPrimary = Color.White,                  // 关键按钮上的文字颜色
+    primaryContainer = DarkSecondary,         // 次要按钮背景色
+    onPrimaryContainer = Color.White,         // 次要按钮上的文字颜色
+    secondaryContainer = DarkBackground,      // 圆角矩形背景色
+    onSecondaryContainer = Color.White,      // 圆角矩形上的文字颜色
+    surfaceVariant = DarkSurfaceVariant,     // 主页面和设置模块的圆角矩形背景
+    onSurfaceVariant = Color.White,          // surfaceVariant 上的文字颜色
     secondary = BlueGrey80,
     tertiary = Teal80
 )
 
 private val LightColorScheme = lightColorScheme(
-    primary = Blue40,
+    primary = LightPrimary,                  // 关键按钮、对勾框、开关按钮背景色 (#03629A)
+    onPrimary = Color.White,                 // 关键按钮上的文字颜色
+    primaryContainer = LightSecondary,       // 次要按钮背景色 (#CEE5FF)
+    onPrimaryContainer = LightPrimary,       // 次要按钮上的文字颜色
+    secondaryContainer = LightBackground,   // 圆角矩形背景色 (#EBF6FF)
+    onSecondaryContainer = LightPrimary,    // 圆角矩形上的文字颜色
+    surfaceVariant = LightSurfaceVariant,   // 主页面和设置模块的圆角矩形背景 (#F9F9FB)
+    onSurfaceVariant = Color(0xFF1C1B1F),   // surfaceVariant 上的文字颜色
     secondary = BlueGrey40,
     tertiary = Teal40
-
-    /* Other default colors to override
-    background = Color(0xFFFFFBFE),
-    surface = Color(0xFFFFFBFE),
-    onPrimary = Color.White,
-    onSecondary = Color.White,
-    onTertiary = Color.White,
-    onBackground = Color(0xFF1C1B1F),
-    onSurface = Color(0xFF1C1B1F),
-    */
 )
 
 @Composable

@@ -1,6 +1,7 @@
 package com.app.glassesreader.accessibility.service
 
 import android.accessibilityservice.AccessibilityService
+import android.os.SystemClock
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -12,6 +13,8 @@ import com.app.glassesreader.accessibility.ScreenTextPublisher
 class ScreenTextService : AccessibilityService() {
 
     private var lastSnapshot: String = ""
+    // 上次实际处理事件的时间，用于简单节流，避免高频事件导致卡顿
+    private var lastHandledEventTime: Long = 0L
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -22,6 +25,14 @@ class ScreenTextService : AccessibilityService() {
         if (event == null || !shouldHandle(event)) {
             return
         }
+
+        // 简单时间节流：在短时间内的高频事件（例如滚动、内容频繁变化）只处理一部分
+        // 例如：150ms 内只处理一次，既能保持文字相对及时，又能大幅降低主线程压力
+        val now = SystemClock.uptimeMillis()
+        if (now - lastHandledEventTime < 150) {
+            return
+        }
+        lastHandledEventTime = now
 
         val collectedLines = mutableListOf<String>()
         val rootNode = rootInActiveWindow
@@ -59,7 +70,6 @@ class ScreenTextService : AccessibilityService() {
     private fun shouldHandle(event: AccessibilityEvent): Boolean {
         return when (event.eventType) {
             AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED,
-            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
             AccessibilityEvent.TYPE_VIEW_SCROLLED -> true
             else -> false

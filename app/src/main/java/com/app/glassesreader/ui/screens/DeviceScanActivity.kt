@@ -14,14 +14,17 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -40,7 +43,13 @@ import com.app.glassesreader.sdk.BluetoothHelper
 import com.app.glassesreader.sdk.CxrConnectionManager
 import com.app.glassesreader.sdk.CxrCustomViewManager
 import com.app.glassesreader.ui.components.DeviceList
+import CustomIconButton
+import androidx.compose.foundation.layout.width
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.ui.graphics.luminance
 import com.app.glassesreader.ui.theme.GlassesReaderTheme
+import com.app.glassesreader.ui.theme.DarkButtonBackground
+import com.app.glassesreader.ui.theme.LightButtonBackground
 import com.rokid.cxr.client.utils.ValueUtil
 
 /**
@@ -118,21 +127,27 @@ class DeviceScanActivity : ComponentActivity() {
 
         setContent {
             GlassesReaderTheme(darkTheme = isDarkTheme) {
-                Surface(modifier = Modifier.fillMaxSize()) {
-                    DeviceScanScreen(
-                        isScanning = isScanning,
-                        devices = devices,
-                        isConnecting = isConnecting,
-                        connectionStatus = connectionStatus,
-                        isConnected = connectionManager.isConnected(),
-                        onStartScan = ::startScan,
-                        onStopScan = ::stopScan,
-                        onDeviceSelected = ::connectDevice,
-                        isDeviceConnected = { device ->
-                            bluetoothHelper?.isDeviceConnected(device) ?: false
-                        },
-                        onBack = { finish() }
-                    )
+                Scaffold { innerPadding ->
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(innerPadding)
+                    ) {
+                        DeviceScanScreen(
+                            isScanning = isScanning,
+                            devices = devices,
+                            isConnecting = isConnecting,
+                            connectionStatus = connectionStatus,
+                            isConnected = connectionManager.isConnected(),
+                            onStartScan = ::startScan,
+                            onStopScan = ::stopScan,
+                            onDeviceSelected = ::connectDevice,
+                            isDeviceConnected = { device ->
+                                bluetoothHelper?.isDeviceConnected(device) ?: false
+                            },
+                            onBack = { finish() }
+                        )
+                    }
                 }
             }
         }
@@ -226,7 +241,8 @@ class DeviceScanActivity : ComponentActivity() {
                 override fun onFailed(errorCode: ValueUtil.CxrBluetoothErrorCode?) {
                     Log.e(TAG, "Connection failed: $errorCode")
                     isConnecting = false
-                    connectionStatus = getErrorMessage(errorCode)
+                    // 统一为简洁的连接失败提示，不再区分具体错误码文案
+                    connectionStatus = "连接失败，请重试"
                 }
 
                 override fun onConnectionInfo(
@@ -268,31 +284,6 @@ class DeviceScanActivity : ComponentActivity() {
         }
     }
 
-    /**
-     * 根据错误码获取用户友好的错误信息
-     */
-    private fun getErrorMessage(errorCode: ValueUtil.CxrBluetoothErrorCode?): String {
-        return when (errorCode) {
-            ValueUtil.CxrBluetoothErrorCode.BLE_CONNECT_FAILED -> {
-                "连接失败：BLE 连接失败，设备忙"
-            }
-            ValueUtil.CxrBluetoothErrorCode.SOCKET_CONNECT_FAILED -> {
-                "连接失败：Socket 连接失败，可能是设备不支持多连接或网络问题"
-            }
-            ValueUtil.CxrBluetoothErrorCode.PARAM_INVALID -> {
-                "连接失败：参数无效"
-            }
-            ValueUtil.CxrBluetoothErrorCode.UNKNOWN -> {
-                "连接失败：请尝试按三次眼镜按钮，通过重新配对，发起与Glasses Reader的连接"
-            }
-            null -> {
-                "连接失败：请尝试按三次眼镜按钮，通过重新配对，发起与Glasses Reader的连接"
-            }
-            else -> {
-                "连接失败：$errorCode"
-            }
-        }
-    }
 }
 
 @Composable
@@ -311,39 +302,75 @@ private fun DeviceScanScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 20.dp, vertical = 32.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
+            // 与主页/设置页保持统一的内容内边距（顶部留白由 Scaffold 处理）
+            .padding(horizontal = 20.dp, vertical = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(20.dp),
+        horizontalAlignment = Alignment.Start
     ) {
-        Text(
-            text = "扫描智能眼镜",
-            style = MaterialTheme.typography.headlineMedium,
-            fontWeight = FontWeight.Bold,
-            textAlign = TextAlign.Center
-        )
-
-        // 提示信息
-        Surface(
-            color = MaterialTheme.colorScheme.secondaryContainer,
-            shape = MaterialTheme.shapes.small
+        // 顶部返回按钮 + 标题，风格与设置页统一
+        Row(
+            modifier = Modifier
+                .fillMaxWidth(),
+            horizontalArrangement = Arrangement.Start,
+            verticalAlignment = Alignment.CenterVertically
         ) {
+            CustomIconButton(
+                onClick = onBack,
+                size = 56.dp,
+                containerColor = if (MaterialTheme.colorScheme.background.luminance() < 0.5f) {
+                    DarkButtonBackground
+                } else {
+                    LightButtonBackground
+                },
+                contentColor = MaterialTheme.colorScheme.onSurface
+            ) {
+                androidx.compose.material3.Icon(
+                    imageVector = androidx.compose.material.icons.Icons.Default.ArrowBack,
+                    contentDescription = "返回",
+                    modifier = Modifier.size(24.dp),
+                    tint = MaterialTheme.colorScheme.onSurface
+                )
+            }
+            Spacer(modifier = Modifier.width(12.dp))
             Text(
-                text = "提示：如已连接官方应用，请按三次眼镜按钮，发起与Glasses Reader的配对",
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSecondaryContainer
+                text = "设备连接",
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold
             )
+        }
+
+        // 提示信息，使用圆角矩形与浅背景，风格与设置页提示统一
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            shape = MaterialTheme.shapes.medium
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    text = "蓝牙连接说明",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = "如已连接官方应用，请按三次眼镜按钮，完成与系统蓝牙的配对后，再在此页面扫描并选择目标眼镜进行连接。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
 
         if (isConnected) {
             Surface(
-                color = MaterialTheme.colorScheme.primaryContainer,
+                color = MaterialTheme.colorScheme.secondaryContainer,
                 shape = MaterialTheme.shapes.medium
             ) {
                 Text(
                     text = "智能眼镜：已连接",
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
                     fontWeight = FontWeight.Medium
                 )
             }
@@ -353,7 +380,11 @@ private fun DeviceScanScreen(
             Text(
                 text = connectionStatus,
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.primary
+                color = if (connectionStatus.startsWith("连接失败") || connectionStatus.contains("断开")) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.primary
+                }
             )
         }
 
@@ -371,7 +402,7 @@ private fun DeviceScanScreen(
 
         if (devices.isNotEmpty()) {
             Text(
-                text = "选择要连接的设备：",
+                text = "选择要连接的设备",
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.Medium,
                 modifier = Modifier.fillMaxWidth()
@@ -394,13 +425,6 @@ private fun DeviceScanScreen(
         }
 
         Spacer(modifier = Modifier.height(16.dp))
-
-        OutlinedButton(
-            onClick = onBack,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("返回")
-        }
     }
 }
 

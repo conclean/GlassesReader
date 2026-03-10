@@ -26,8 +26,8 @@ android {
         applicationId = "com.app.glassesreader"
         minSdk = 29
         targetSdk = 35
-        versionCode = 9
-        versionName = "1.1.9"
+        versionCode = 10
+        versionName = "1.2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -116,6 +116,8 @@ dependencies {
     implementation(libs.androidx.ui.graphics)
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
+    // Navigation Compose
+    implementation("androidx.navigation:navigation-compose:2.7.6")
     // implementation("androidx.compose.material:material-icons-extended")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     implementation("com.github.princekin-f:EasyFloat:2.0.4")

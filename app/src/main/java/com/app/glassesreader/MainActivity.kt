@@ -58,7 +58,6 @@ class MainActivity : ComponentActivity() {
     private var serviceRunning by mutableStateOf(false)
     private var readerEnabled by mutableStateOf(false)
     private var glassesConnected by mutableStateOf(false)
-    private var defaultTab by mutableStateOf(MainTab.SETUP)
     private var userDisabledService by mutableStateOf(false)
     private var overlayUIEnabled by mutableStateOf(false)
     private var showAutoReconnectFailedDialog by mutableStateOf(false)
@@ -232,7 +231,6 @@ class MainActivity : ComponentActivity() {
                     // 在 Compose 作用域内调用，确保状态更新时自动重组
                     MainScreen(
                         uiState = buildMainUiState(),
-                        defaultTab = defaultTab,
                         currentVersion = currentVersion,
                         checkingUpdate = checkingUpdate,
                         onRequestOverlay = ::openOverlaySettings,
@@ -260,7 +258,7 @@ class MainActivity : ComponentActivity() {
                             onDismiss = { showAutoReconnectFailedDialog = false },
                             onNavigateToConnect = {
                                 showAutoReconnectFailedDialog = false
-                                defaultTab = MainTab.CONNECT
+                                // 导航到设置页面的设备连接部分（由用户手动点击设置按钮）
                             }
                         )
                     }
@@ -293,7 +291,7 @@ class MainActivity : ComponentActivity() {
                                 },
                                 onNavigateToSettings = {
                                     showAutoUpdateReminderDialog = false
-                                    navigateToSettingsTab()
+                                    // 设置页面现在通过导航系统访问，用户需要手动点击设置按钮
                                 }
                             )
                         }
@@ -358,7 +356,6 @@ class MainActivity : ComponentActivity() {
 
         syncBrightnessWithGlass()
 
-        updateDefaultTab()
         ensureOverlayServiceState()
         maybeAutoControlReader()
         updateReaderAvailability()
@@ -480,13 +477,6 @@ class MainActivity : ComponentActivity() {
         return permissions.toTypedArray()
     }
 
-    private fun updateDefaultTab() {
-        defaultTab = when {
-            !overlayPermissionGranted || !accessibilityEnabled || !sdkPermissionsGranted -> MainTab.SETUP
-            !glassesConnected -> MainTab.CONNECT
-            else -> MainTab.DISPLAY
-        }
-    }
 
     private fun maybeAutoControlReader() {
         val shouldDisableReader = !(overlayPermissionGranted &&
@@ -882,12 +872,6 @@ class MainActivity : ComponentActivity() {
         }
     }
     
-    /**
-     * 跳转到设置页面
-     */
-    private fun navigateToSettingsTab() {
-        defaultTab = MainTab.SETTINGS
-    }
 
 
     companion object {

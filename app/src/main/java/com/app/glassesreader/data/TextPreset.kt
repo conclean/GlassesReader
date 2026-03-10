@@ -25,7 +25,7 @@ data class TextPreset(
         fun createDefault(): TextPreset {
             return TextPreset(
                 id = UUID.randomUUID().toString(),
-                name = "默认设置",
+                name = "默认配置",
                 brightness = 8,
                 textSize = 18f,
                 removeEmptyLines = false,

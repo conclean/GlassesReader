@@ -49,42 +49,56 @@ fun PresetTabRow(
 ) {
     val selectedIndex = presets.indexOfFirst { it.id == currentPresetId }.coerceAtLeast(0)
     
-    ScrollableTabRow(
-        selectedTabIndex = if (selectedIndex < presets.size) selectedIndex else 0,
-        modifier = Modifier.fillMaxWidth()
+    Column(
+        verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        // 预设标签
-        presets.forEachIndexed { _, preset ->
+        ScrollableTabRow(
+            selectedTabIndex = if (selectedIndex < presets.size) selectedIndex else 0,
+            modifier = Modifier.fillMaxWidth(),
+            edgePadding = 0.dp
+        ) {
+            // 预设标签：点击切换，长按编辑
+            presets.forEachIndexed { _, preset ->
+                Tab(
+                    selected = preset.id == currentPresetId,
+                    onClick = { onPresetSelected(preset.id) },
+                    text = {
+                        Text(
+                            text = preset.name,
+                            maxLines = 1,
+                            // 在文字区域同时支持短按（切换）和长按（编辑）
+                            modifier = Modifier.combinedClickable(
+                                onClick = { onPresetSelected(preset.id) },
+                                onLongClick = { onPresetLongPress(preset) }
+                            )
+                        )
+                    }
+                )
+            }
+            
+            // 新建按钮（作为最后一个Tab）
             Tab(
-                selected = preset.id == currentPresetId,
-                onClick = { onPresetSelected(preset.id) },
-                modifier = Modifier.combinedClickable(
-                    onClick = { 
-                        // 点击事件由 Tab 的 onClick 处理，这里只处理长按
-                    },
-                    onLongClick = { onPresetLongPress(preset) }
-                ),
+                selected = false,
+                onClick = onCreateNew,
                 text = {
-                    Text(
-                        text = preset.name,
-                        maxLines = 1
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text("+")
+                    }
                 }
             )
         }
-        
-        // 新建按钮（作为最后一个Tab）
-        Tab(
-            selected = false,
-            onClick = onCreateNew,
-            text = {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Text("+")
-                }
-            }
+
+        // 提示文案：长按预设名称可进行编辑
+        Text(
+            text = "注意：长按预设名称可进行编辑",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 4.dp)
         )
     }
 }

@@ -1,12 +1,17 @@
 package com.app.glassesreader.ui.components
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowForward
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LargeFloatingActionButton
 import androidx.compose.material3.MaterialTheme
@@ -132,3 +137,52 @@ fun StatusListItem(
     }
 }
 
+/**
+ * 简化的权限列表项组件
+ * 一行文字 + 右侧箭头/对勾
+ */
+@Composable
+fun SimplePermissionItem(
+    title: String,
+    isCompleted: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            // 先设置点击，再通过 padding 控制行内文字/图标的内边距和高度
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 18.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.bodyLarge,
+            color = if (isCompleted) {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            } else {
+                // 未完成时使用错误色，提升警示感
+                MaterialTheme.colorScheme.error
+            },
+            fontWeight = if (isCompleted) FontWeight.Normal else FontWeight.Medium
+        )
+        if (isCompleted) {
+            Icon(
+                imageVector = Icons.Default.Check,
+                contentDescription = "已完成",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(20.dp)
+            )
+        } else {
+            Icon(
+                imageVector = Icons.Default.ArrowForward,
+                contentDescription = "前往设置",
+                // 未完成时使用错误色
+                tint = MaterialTheme.colorScheme.error,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+    }
+}
