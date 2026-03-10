@@ -70,6 +70,7 @@ class ScreenTextService : AccessibilityService() {
     private fun shouldHandle(event: AccessibilityEvent): Boolean {
         return when (event.eventType) {
             AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED,
+            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
             AccessibilityEvent.TYPE_VIEW_SCROLLED -> true
             else -> false
