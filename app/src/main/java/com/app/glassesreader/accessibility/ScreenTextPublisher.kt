@@ -6,6 +6,8 @@ import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * 无障碍文字广播中心，负责在应用内共享最新的屏幕文字。
+ *
+ * `timestamp` 使用 [System.currentTimeMillis]，与 [com.app.glassesreader.recording.ArRecordingTimeline] 的录屏 t=0 同一时钟。
  */
 object ScreenTextPublisher {
     /**

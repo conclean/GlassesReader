@@ -34,6 +34,8 @@ data class MainUiState(
     val arScreenshotWifiPreparing: Boolean = false,
     /** AR 截图 Wi‑Fi 等待阶段剩余秒数（60→0，仅数字展示） */
     val arScreenshotWifiCountdownSec: Int = 0,
+    /** AR 录屏：视频同步 / 叠字导出进行中 */
+    val arVideoSyncInProgress: Boolean = false,
     val isDarkTheme: Boolean = false,
     val presets: List<TextPreset> = emptyList(),
     val currentPresetId: String? = null,

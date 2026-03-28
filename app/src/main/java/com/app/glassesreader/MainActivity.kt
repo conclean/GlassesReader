@@ -4,10 +4,10 @@ import android.Manifest
 import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.content.res.Configuration
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -29,6 +29,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import com.app.glassesreader.accessibility.ScreenTextPublisher
+import com.app.glassesreader.recording.ArRecordingTimeline
+import com.app.glassesreader.recording.ArScreenTextCollector
+import com.app.glassesreader.recording.ArVideoMedia3OverlayExporter
 import com.app.glassesreader.accessibility.service.ScreenTextService
 import com.app.glassesreader.data.TextPreset
 import com.app.glassesreader.data.TextPresetManager
@@ -76,6 +79,23 @@ private const val PHOTO_SYNC_QUALITY = 100
 
 /** false 时仅同步并导出原图，不做叠字 */
 private const val PHOTO_OVERLAY_ENABLED = true
+
+/** 与 [sdk/doc/拍照录像录音.md] 一致：unit=1 表示 duration 单位为秒 */
+/** 与眼镜 setVideoParams 一致 */
+private const val AR_VIDEO_DURATION_SEC = 15
+private const val AR_VIDEO_FPS = 30
+private const val AR_VIDEO_WIDTH = 1920
+private const val AR_VIDEO_HEIGHT = 1080
+private const val AR_VIDEO_UNIT_SECONDS = 1
+
+/** 眼镜写完文件后再拉取；关场景后略等再拉，长视频略增等待 */
+private const val POST_VIDEO_RECORD_SYNC_DELAY_MS = 2_500L
+
+/** 略长于 [AR_VIDEO_DURATION_SEC]，兜底自动停录 */
+private const val AR_RECORD_AUTO_STOP_MS = 17_000L
+
+/** 与 [ArVideoMedia3OverlayExporter] 一致，便于 logcat：`adb logcat -s ArVideoMedia3Overlay` */
+private const val AR_VIDEO_OVERLAY_LOG_TAG = "ArVideoMedia3Overlay"
 
 /**
  * MainActivity 用于引导用户授权并启动浮窗服务。
@@ -133,6 +153,14 @@ class MainActivity : ComponentActivity() {
     private var arScreenshotWifiRetryRunnable: Runnable? = null
     /** 每次进入「AI 截图连 Wi‑Fi」流程自增，用于丢弃旧会话回调、区分超时后的晚到 [onConnected] */
     private var arScreenshotWifiFlowId: Int = 0
+
+    /** Wi‑Fi 就绪后弹出 AR 录屏快门（而非截图快门） */
+    private var pendingArWifiForRecord: Boolean = false
+    private var arRecordingActive: Boolean = false
+    private var arVideoSyncInProgress by mutableStateOf(false)
+    private var arRecordingCollector: ArScreenTextCollector? = null
+    private var arRecordAnchor: ArRecordingTimeline.SessionAnchor? = null
+    private var arRecordAutoStopRunnable: Runnable? = null
 
     private val overlayPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
@@ -289,7 +317,7 @@ class MainActivity : ComponentActivity() {
                         onBrightnessChange = ::onBrightnessChange,
                         onCheckUpdate = ::checkForUpdate,
                         onPhotoSyncVerify = ::runPhotoSyncVerify,
-                        onArScreenRecord = { showToast("敬请期待") },
+                        onArScreenRecord = ::runArScreenRecordVerify,
                         onConfirmRebootGlasses = ::requestGlassesReboot,
                         onSettingChanged = {
                             // 实时保存到当前预设
@@ -753,6 +781,19 @@ class MainActivity : ComponentActivity() {
         return reasons
     }
 
+    /**
+     * 设置页标题栏「AR截图 / AR录屏」入口：前置条件与读屏开关一致（悬浮窗、无障碍、SDK 权限、眼镜连接）。
+     * 浮窗圆形快门上不再做这些校验——能点到快门说明已通过本入口把关。
+     */
+    private fun ensureArMediaSettingsEntryOk(): Boolean {
+        val reasons = collectMissingReasons()
+        if (reasons.isNotEmpty()) {
+            showToast(reasons.joinToString("、"))
+            return false
+        }
+        return true
+    }
+
     private fun updateReaderAvailability() {
         val reasons = collectMissingReasons()
         TextOverlayService.updateToggleAvailability(
@@ -823,6 +864,7 @@ class MainActivity : ComponentActivity() {
             deviceAutoReconnectInProgress = deviceAutoReconnectInProgress,
             arScreenshotWifiPreparing = arScreenshotWifiPreparing,
             arScreenshotWifiCountdownSec = arScreenshotWifiCountdownSec,
+            arVideoSyncInProgress = arVideoSyncInProgress,
             isDarkTheme = isDarkTheme,
             presets = presets,
             currentPresetId = currentPresetId,
@@ -920,6 +962,11 @@ class MainActivity : ComponentActivity() {
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
     }
 
+    private fun isActivityDestroyedOrFinishing(): Boolean {
+        if (isFinishing) return true
+        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1 && isDestroyed
+    }
+
     /**
      * 见 [sdk/doc/控制与监听设备状态.md]：`notifyGlassReboot()` 通知眼镜重启。
      */
@@ -956,28 +1003,34 @@ class MainActivity : ComponentActivity() {
      * 设置页「AR截图」：先建立 Wi‑Fi P2P（设置页显示细进度条），连上后再弹出圆形快门；拍照同步阶段沿用已连上的 Wi‑Fi。
      */
     private fun runPhotoSyncVerify() {
-        if (!glassesConnected) {
-            showToast("请先连接智能眼镜")
-            return
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.NEARBY_WIFI_DEVICES) !=
-            PackageManager.PERMISSION_GRANTED
-        ) {
-            Log.w(LOG_TAG, "NEARBY_WIFI_DEVICES not granted, requesting")
-            showToast("需要附近设备权限以同步图片")
-            sdkPermissionLauncher.launch(arrayOf(Manifest.permission.NEARBY_WIFI_DEVICES))
-            return
-        }
-        if (photoSyncInProgress) {
-            showToast("拍照同步进行中")
+        pendingArWifiForRecord = false
+        if (!ensureArMediaSettingsEntryOk()) return
+        if (photoSyncInProgress || arVideoSyncInProgress) {
+            showToast("媒体同步进行中")
             return
         }
         if (arScreenshotWifiPreparing) {
             return
         }
-        if (!Settings.canDrawOverlays(this)) {
-            showToast("需要悬浮窗权限：请先在系统设置中为本应用开启悬浮窗")
+        ensureWifiForArScreenshotThenShowShutter()
+    }
+
+    /**
+     * 设置页「AR录屏」：与截图相同先建立 Wi‑Fi，再出现倒计时快门；结束后开录并出现「停止」浮窗。
+     */
+    private fun runArScreenRecordVerify() {
+        pendingArWifiForRecord = true
+        if (!ensureArMediaSettingsEntryOk()) {
+            pendingArWifiForRecord = false
+            return
+        }
+        if (photoSyncInProgress || arVideoSyncInProgress) {
+            pendingArWifiForRecord = false
+            showToast("媒体同步进行中")
+            return
+        }
+        if (arScreenshotWifiPreparing) {
+            pendingArWifiForRecord = false
             return
         }
         ensureWifiForArScreenshotThenShowShutter()
@@ -992,8 +1045,13 @@ class MainActivity : ComponentActivity() {
         val api = CxrApi.getInstance()
         val wifiReady = runCatching { api.isWifiP2PConnected() }.getOrDefault(false)
         if (wifiReady) {
-            Log.d(LOG_TAG, "[ArScreenshot] WiFi already connected, show shutter")
-            TextOverlayService.showArShutter(this)
+            Log.d(LOG_TAG, "[ArMedia] WiFi already connected, show overlay")
+            if (pendingArWifiForRecord) {
+                pendingArWifiForRecord = false
+                TextOverlayService.showArRecordShutter(this)
+            } else {
+                TextOverlayService.showArShutter(this)
+            }
             return
         }
 
@@ -1050,7 +1108,12 @@ class MainActivity : ComponentActivity() {
             arScreenshotWifiPreparing = false
             showArScreenshotWifiTimeoutDialog = false
             if (!isFinishing) {
-                TextOverlayService.showArShutter(this)
+                if (pendingArWifiForRecord) {
+                    pendingArWifiForRecord = false
+                    TextOverlayService.showArRecordShutter(this)
+                } else {
+                    TextOverlayService.showArShutter(this)
+                }
             }
             return
         }
@@ -1058,7 +1121,12 @@ class MainActivity : ComponentActivity() {
             Log.d(LOG_TAG, "[ArScreenshot] onConnected after timeout (late callback), dismissing restart dialog")
             showArScreenshotWifiTimeoutDialog = false
             if (!isFinishing) {
-                TextOverlayService.showArShutter(this)
+                if (pendingArWifiForRecord) {
+                    pendingArWifiForRecord = false
+                    TextOverlayService.showArRecordShutter(this)
+                } else {
+                    TextOverlayService.showArShutter(this)
+                }
             }
             return
         }
@@ -1115,13 +1183,18 @@ class MainActivity : ComponentActivity() {
         Log.w(LOG_TAG, "[ArScreenshot] WiFi countdown timeout (60s)")
         cancelArScreenshotWifiCountdown()
         arScreenshotWifiPreparing = false
-        runCatching {
-            CxrApi.getInstance().deinitWifiP2P()
-            Log.d(LOG_TAG, "[ArScreenshot] deinitWifiP2P after timeout")
-        }.onFailure { e ->
-            Log.w(LOG_TAG, "[ArScreenshot] deinitWifiP2P after timeout: ${e.message}")
-        }
-        if (!isFinishing) {
+        pendingArWifiForRecord = false
+        // 推迟到下一次主线程消息：避免与 initWifiP2P/失败重试回调同栈调用 deinit 引发 native 异常，
+        // 并避免在倒计时 Runnable 返回前立即触发 Compose 弹窗与窗口 relayout 叠加导致偶现崩溃。
+        mainHandler.post {
+            if (isActivityDestroyedOrFinishing()) return@post
+            runCatching {
+                CxrApi.getInstance().deinitWifiP2P()
+                Log.d(LOG_TAG, "[ArScreenshot] deinitWifiP2P after timeout")
+            }.onFailure { e ->
+                Log.w(LOG_TAG, "[ArScreenshot] deinitWifiP2P after timeout: ${e.message}")
+            }
+            if (isActivityDestroyedOrFinishing()) return@post
             showArScreenshotWifiTimeoutDialog = true
         }
     }
@@ -1139,12 +1212,12 @@ class MainActivity : ComponentActivity() {
             PackageManager.PERMISSION_GRANTED
         ) {
             Log.w(LOG_TAG, "NEARBY_WIFI_DEVICES not granted, requesting")
-            showToast("需要附近设备权限以同步图片")
+            showToast("需要附近设备权限以同步AR截图")
             sdkPermissionLauncher.launch(arrayOf(Manifest.permission.NEARBY_WIFI_DEVICES))
             return
         }
         if (photoSyncInProgress) {
-            showToast("拍照同步进行中")
+            showToast("AR截图同步进行中")
             return
         }
 
@@ -1161,7 +1234,7 @@ class MainActivity : ComponentActivity() {
                 Log.d(LOG_TAG, "[PhotoSync#$attemptId] onPhotoPath status=$status path=$path")
                 if (status != ValueUtil.CxrStatus.RESPONSE_SUCCEED || path.isNullOrBlank()) {
                     photoSyncInProgress = false
-                    showToast("拍照路径回调失败")
+                    showToast("AR截图路径回调失败")
                     return
                 }
                 startSyncSinglePicture(attemptId, path, overlayTextSnapshot)
@@ -1212,7 +1285,7 @@ class MainActivity : ComponentActivity() {
         ) {
             Log.w(LOG_TAG, "[PhotoSync#$attemptId] NEARBY_WIFI_DEVICES not granted before P2P")
             photoSyncInProgress = false
-            showToast("需要附近设备权限以同步图片")
+            showToast("需要附近设备权限以同步AR截图")
             sdkPermissionLauncher.launch(arrayOf(Manifest.permission.NEARBY_WIFI_DEVICES))
             return
         }
@@ -1233,7 +1306,7 @@ class MainActivity : ComponentActivity() {
             if (!syncFinished.compareAndSet(false, true)) return
             photoSyncInProgress = false
             deinitWifiP2PAfterPhotoSync(attemptId)
-            showToast(message ?: if (success) "拍照并同步完成" else "图片同步失败")
+            showToast(message ?: if (success) "AR截图已完成" else "AR截图同步失败")
         }
 
         fun runSyncWithArg(syncArg: String, alternateArg: String?) {
@@ -1318,18 +1391,18 @@ class MainActivity : ComponentActivity() {
                         val msg = if (didComposeOverlay) {
                             when {
                                 resultFile != null && galleryUri != null ->
-                                    "同步完成，叠字图已加入相册「GlassesReader」"
+                                    "AR截图已完成，图片已加入相册「GlassesReader」"
                                 resultFile != null ->
-                                    "叠字已保存，写入相册失败（可在应用私有目录查看）"
-                                else -> "拍照已同步，叠字未生成"
+                                    "AR截图已保存，写入相册失败（可在应用私有目录查看）"
+                                else -> "AR截图已同步，处理未完成"
                             }
                         } else {
                             when {
                                 resultFile != null && galleryUri != null ->
-                                    "同步完成，原图已加入相册「GlassesReader」"
+                                    "AR截图已完成，原图已加入相册「GlassesReader」"
                                 resultFile != null ->
-                                    "同步完成，原图已保存，写入相册失败"
-                                else -> "拍照已同步，未取得本地文件"
+                                    "AR截图原图已保存，写入相册失败"
+                                else -> "AR截图已同步，未取得本地文件"
                             }
                         }
                         finishSync(true, msg)
@@ -1387,13 +1460,302 @@ class MainActivity : ComponentActivity() {
 
             override fun onFailed(errorCode: ValueUtil.CxrWifiErrorCode?) {
                 Log.e(LOG_TAG, "[PhotoSync#$attemptId] wifi init failed error=$errorCode")
-                finishSync(false, "Wi-Fi连接失败")
+                finishSync(false, "AR截图：Wi-Fi连接失败")
             }
         })
         Log.d(LOG_TAG, "[PhotoSync#$attemptId] initWifiP2P status=$initStatus")
         if (initStatus == ValueUtil.CxrStatus.REQUEST_FAILED) {
-            finishSync(false, "Wi-Fi初始化失败")
+            finishSync(false, "AR截图：Wi-Fi初始化失败")
         }
+    }
+
+    private fun beginArVideoRecording() {
+        if (arRecordingActive || arVideoSyncInProgress) return
+        if (!glassesConnected) {
+            showToast("请先连接智能眼镜")
+            return
+        }
+        val api = CxrApi.getInstance()
+        val paramStatus = runCatching {
+            api.setVideoParams(
+                AR_VIDEO_DURATION_SEC,
+                AR_VIDEO_FPS,
+                AR_VIDEO_WIDTH,
+                AR_VIDEO_HEIGHT,
+                AR_VIDEO_UNIT_SECONDS
+            )
+        }.getOrNull()
+        if (paramStatus != ValueUtil.CxrStatus.REQUEST_SUCCEED) {
+            showToast("录像参数设置失败")
+            return
+        }
+        val openStatus = runCatching {
+            api.controlScene(ValueUtil.CxrSceneType.VIDEO_RECORD, true, null)
+        }.getOrNull()
+        if (openStatus != ValueUtil.CxrStatus.REQUEST_SUCCEED) {
+            showToast("无法开始录像")
+            return
+        }
+        val anchor = ArRecordingTimeline.captureAnchorAfterRecordRequestSucceed()
+        arRecordAnchor = anchor
+        arRecordingActive = true
+        arRecordingCollector = ArScreenTextCollector(anchor).also { it.start() }
+        TextOverlayService.showArRecordStop(this)
+        arRecordAutoStopRunnable?.let { mainHandler.removeCallbacks(it) }
+        val r = Runnable { finishArVideoRecording() }
+        arRecordAutoStopRunnable = r
+        mainHandler.postDelayed(r, AR_RECORD_AUTO_STOP_MS)
+    }
+
+    private fun finishArVideoRecording() {
+        if (!arRecordingActive) return
+        arRecordingActive = false
+        arRecordAutoStopRunnable?.let { mainHandler.removeCallbacks(it) }
+        arRecordAutoStopRunnable = null
+        val points = arRecordingCollector?.snapshotPoints().orEmpty()
+        arRecordingCollector?.stop()
+        arRecordingCollector = null
+        arRecordAnchor = null
+        Log.d(
+            AR_VIDEO_OVERLAY_LOG_TAG,
+            "[pipeline] finishArVideoRecording collectedPoints=${points.size} " +
+                "firstTexts=${points.take(2).map { it.rawText.take(40) }}"
+        )
+        runCatching { CxrApi.getInstance().controlScene(ValueUtil.CxrSceneType.VIDEO_RECORD, false, null) }
+            .onFailure { Log.w(LOG_TAG, "controlScene close video: ${it.message}") }
+        TextOverlayService.dismissArRecordStop(this)
+        TextOverlayService.notifyArVideoRecordingFinished(this)
+        if (arVideoSyncInProgress) return
+        arVideoSyncInProgress = true
+        mainHandler.postDelayed({
+            startSyncRecordedVideo(points)
+        }, POST_VIDEO_RECORD_SYNC_DELAY_MS)
+    }
+
+    private fun startSyncRecordedVideo(points: List<ArScreenTextCollector.ArScreenTextPoint>) {
+        Log.d(
+            AR_VIDEO_OVERLAY_LOG_TAG,
+            "[pipeline] startSyncRecordedVideo points=${points.size} sampleTs=${points.take(3).map { it.tMs }}"
+        )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.NEARBY_WIFI_DEVICES) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            arVideoSyncInProgress = false
+            showToast("需要附近设备权限以同步AR录屏")
+            return
+        }
+        photoSyncAttemptSeq += 1
+        val attemptId = photoSyncAttemptSeq
+        val incomingDir = File(getExternalFilesDir("video_sync"), "incoming").apply { mkdirs() }
+        val beforeNames = incomingDir.list()?.toSet() ?: emptySet()
+        val savePath = incomingDir.absolutePath.let { p ->
+            if (p.endsWith(File.separator)) p else p + File.separator
+        }
+        val api = CxrApi.getInstance()
+        val mainHandler = Handler(Looper.getMainLooper())
+        val syncedNames = mutableListOf<String>()
+        val syncFinished = AtomicBoolean(false)
+
+        fun finishVideo(success: Boolean, message: String? = null) {
+            if (!syncFinished.compareAndSet(false, true)) return
+            arVideoSyncInProgress = false
+            deinitWifiP2PAfterPhotoSync(attemptId)
+            showToast(message ?: if (success) "AR录屏已完成" else "AR录屏同步失败")
+        }
+
+        val syncCallback = object : SyncStatusCallback {
+            override fun onSyncStart() {
+                Log.d(LOG_TAG, "[VideoSync#$attemptId] onSyncStart")
+            }
+
+            override fun onSingleFileSynced(name: String?) {
+                if (!name.isNullOrBlank()) syncedNames.add(name)
+                Log.d(LOG_TAG, "[VideoSync#$attemptId] onSingleFileSynced name=$name")
+            }
+
+            override fun onSyncFailed() {
+                Log.e(LOG_TAG, "[VideoSync#$attemptId] onSyncFailed")
+                mainHandler.post { finishVideo(false) }
+            }
+
+            override fun onSyncFinished() {
+                Log.d(LOG_TAG, "[VideoSync#$attemptId] onSyncFinished")
+                mainHandler.post {
+                    CoroutineScope(Dispatchers.Main).launch {
+                        val localFile = withContext(Dispatchers.IO) {
+                            pickSyncedVideoFile(incomingDir, beforeNames, syncedNames)
+                        }
+                        if (localFile == null || !localFile.isFile) {
+                            Log.w(AR_VIDEO_OVERLAY_LOG_TAG, "[pipeline] onSyncFinished no local mp4 incomingDir=$incomingDir synced=$syncedNames")
+                            finishVideo(false, "AR录屏：未取得本地视频文件")
+                            return@launch
+                        }
+                        Log.d(
+                            AR_VIDEO_OVERLAY_LOG_TAG,
+                            "[pipeline] picked local mp4 path=${localFile.absolutePath} len=${localFile.length()}"
+                        )
+                        val (_, galleryUri, didOverlay) = withContext(Dispatchers.IO) {
+                            exportArVideoWithOverlay(localFile, points)
+                        }
+                        Log.d(
+                            AR_VIDEO_OVERLAY_LOG_TAG,
+                            "[pipeline] exportArVideoWithOverlay done didOverlay=$didOverlay galleryUri=$galleryUri"
+                        )
+                        val uri = galleryUri
+                        val msg = when {
+                            uri != null -> "AR录屏已完成，视频已加入相册「GlassesReader」"
+                            else -> "AR录屏已保存，写入相册失败"
+                        }
+                        finishVideo(true, msg)
+                    }
+                }
+            }
+        }
+
+        val runStartSync = {
+            val ok = runCatching {
+                api.startSync(savePath, arrayOf(ValueUtil.CxrMediaType.VIDEO), syncCallback)
+            }.getOrElse { e ->
+                Log.e(LOG_TAG, "[VideoSync#$attemptId] startSync threw: ${e.message}", e)
+                false
+            }
+            Log.d(LOG_TAG, "[VideoSync#$attemptId] startSync accepted=$ok")
+            if (!ok) {
+                finishVideo(false, "AR录屏：同步请求失败")
+            }
+        }
+
+        val wifiReady = runCatching { api.isWifiP2PConnected() }.getOrDefault(false)
+        if (wifiReady) {
+            Log.d(LOG_TAG, "[VideoSync#$attemptId] wifi already connected")
+            mainHandler.postDelayed(runStartSync, POST_WIFI_SYNC_DELAY_MS)
+            return
+        }
+
+        runCatching { api.deinitWifiP2P() }
+            .onFailure { Log.w(LOG_TAG, "[VideoSync#$attemptId] deinitWifiP2P: ${it.message}") }
+
+        val initStatus = api.initWifiP2P(object : WifiP2PStatusCallback {
+            override fun onConnected() {
+                Log.d(LOG_TAG, "[VideoSync#$attemptId] wifi connected")
+                mainHandler.postDelayed(runStartSync, POST_WIFI_SYNC_DELAY_MS)
+            }
+
+            override fun onDisconnected() {
+                Log.d(LOG_TAG, "[VideoSync#$attemptId] wifi disconnected")
+            }
+
+            override fun onFailed(errorCode: ValueUtil.CxrWifiErrorCode?) {
+                Log.e(LOG_TAG, "[VideoSync#$attemptId] wifi init failed error=$errorCode")
+                mainHandler.post { finishVideo(false, "AR录屏：Wi‑Fi 连接失败") }
+            }
+        })
+        Log.d(LOG_TAG, "[VideoSync#$attemptId] initWifiP2P status=$initStatus")
+        if (initStatus == ValueUtil.CxrStatus.REQUEST_FAILED) {
+            finishVideo(false, "AR录屏：Wi‑Fi 初始化失败")
+        }
+    }
+
+    private fun pickSyncedVideoFile(
+        incomingDir: File,
+        beforeNames: Set<String>,
+        syncedNames: List<String>
+    ): File? {
+        val fromCallback = syncedNames.lastOrNull()?.let { n ->
+            File(incomingDir, File(n).name)
+        }
+        if (fromCallback != null && fromCallback.isFile) return fromCallback
+        val videos = incomingDir.listFiles { f ->
+            f.isFile && (f.name.endsWith(".mp4", true) || f.name.endsWith(".mov", true))
+        } ?: return null
+        val newOnes = videos.filter { it.name !in beforeNames }
+        return newOnes.maxByOrNull { it.lastModified() } ?: videos.maxByOrNull { it.lastModified() }
+    }
+
+    /**
+     * 将同步到的 MP4 写入相册；在允许叠字时用 Media3 Transformer 按时间线烧录读屏文字。
+     */
+    private fun exportArVideoWithOverlay(
+        localVideo: File,
+        points: List<ArScreenTextCollector.ArScreenTextPoint>
+    ): Triple<File?, Uri?, Boolean> {
+        val durationMs = MediaDurationUtils.getVideoDurationMs(localVideo)
+        val segments = ArScreenTextCollector.buildDisplaySegments(points, durationMs)
+        val overlayAllowed = CxrCustomViewManager.shouldOverlayTextOnSyncedPhoto()
+
+        Log.d(
+            AR_VIDEO_OVERLAY_LOG_TAG,
+            "[export] in=${localVideo.absolutePath} len=${localVideo.length()} durationMs=$durationMs " +
+                "points=${points.size} segments=${segments.size} overlayAllowed=$overlayAllowed"
+        )
+        segments.forEachIndexed { i, seg ->
+            if (i < 8) {
+                val raw = seg.third.replace("\n", "↵")
+                val preview = if (raw.length > 72) raw.take(72) + "…" else raw
+                Log.d(
+                    AR_VIDEO_OVERLAY_LOG_TAG,
+                    "[export] segment[$i] [${seg.first},${seg.second}) ms text=\"$preview\""
+                )
+            }
+        }
+        if (segments.size > 8) {
+            Log.d(AR_VIDEO_OVERLAY_LOG_TAG, "[export] … ${segments.size - 8} more segments omitted")
+        }
+
+        val shouldOverlay = overlayAllowed && segments.isNotEmpty()
+        if (!shouldOverlay) {
+            Log.w(
+                AR_VIDEO_OVERLAY_LOG_TAG,
+                "[export] SKIP burn-in: overlayAllowed=$overlayAllowed segmentsEmpty=${segments.isEmpty()} " +
+                    "→ gallery gets original mp4 only"
+            )
+            val uri = GalleryMediaStore.insertMp4FromFile(
+                this,
+                localVideo,
+                "gr_ar_${System.currentTimeMillis()}.mp4"
+            )
+            Log.d(AR_VIDEO_OVERLAY_LOG_TAG, "[export] insert original only uri=$uri")
+            return Triple(null, uri, false)
+        }
+
+        val outFile = File(cacheDir, "ar_overlay_${System.currentTimeMillis()}.mp4")
+        Log.d(
+            AR_VIDEO_OVERLAY_LOG_TAG,
+            "[export] calling Media3 burnInTimeline → out=${outFile.absolutePath}"
+        )
+        val burned = ArVideoMedia3OverlayExporter.burnInTimeline(
+            this,
+            localVideo,
+            outFile,
+            segments,
+            CxrCustomViewManager.getTextSize()
+        )
+        if (!burned || !outFile.isFile) {
+            Log.w(
+                AR_VIDEO_OVERLAY_LOG_TAG,
+                "[export] Media3 burn-in FAILED or missing output (burned=$burned) → fallback original mp4"
+            )
+            val uri = GalleryMediaStore.insertMp4FromFile(
+                this,
+                localVideo,
+                "gr_ar_${System.currentTimeMillis()}.mp4"
+            )
+            Log.d(AR_VIDEO_OVERLAY_LOG_TAG, "[export] fallback insert uri=$uri")
+            return Triple(null, uri, false)
+        }
+
+        Log.d(
+            AR_VIDEO_OVERLAY_LOG_TAG,
+            "[export] burn-in OK outLen=${outFile.length()} → insert gallery"
+        )
+        val uri = GalleryMediaStore.insertMp4FromFile(
+            this,
+            outFile,
+            "gr_ar_${System.currentTimeMillis()}.mp4"
+        )
+        Log.d(AR_VIDEO_OVERLAY_LOG_TAG, "[export] overlay video inserted uri=$uri")
+        return Triple(outFile, uri, true)
     }
     
     private fun checkForUpdate() {
@@ -1541,6 +1903,29 @@ class MainActivity : ComponentActivity() {
             act?.runOnUiThread {
                 act.executePhotoSyncAfterShutter(snapshotText)
             }
+        }
+
+        fun handleArRecordStart() {
+            val act = synchronized(MainActivity::class.java) { uiInstance }
+            act?.runOnUiThread {
+                act.beginArVideoRecording()
+            }
+        }
+
+        fun handleArRecordStop() {
+            val act = synchronized(MainActivity::class.java) { uiInstance }
+            act?.runOnUiThread {
+                act.finishArVideoRecording()
+            }
+        }
+
+        /**
+         * 眼镜 AR 录屏场景进行中。读屏关闭时不可调用 [com.app.glassesreader.sdk.CxrCustomViewManager.close]，
+         * 否则会打断录像（见 [TextOverlayService]）。
+         */
+        fun isArVideoRecordingActive(): Boolean {
+            val act = synchronized(MainActivity::class.java) { uiInstance } ?: return false
+            return act.arRecordingActive
         }
 
         private const val PREF_APP_SETTINGS = "gr_app_settings"

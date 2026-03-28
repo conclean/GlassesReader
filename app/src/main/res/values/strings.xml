@@ -2,5 +2,6 @@
     <string name="app_name">Glasses Reader</string>
     <string name="ar_screenshot_shutter_cd">AR 截图快门</string>
     <string name="ar_shutter_label">AR</string>
+    <string name="ar_record_stop_cd">AR 录屏倒计时</string>
     <string name="screen_text_service_description">Capture on-screen text changes and share with GlassesReader overlay.</string>
 </resources>

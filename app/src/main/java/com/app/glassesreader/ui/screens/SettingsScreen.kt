@@ -120,12 +120,13 @@ fun SettingsScreen(
                     SettingsCapsuleTextButton(
                         text = "AR截图",
                         isDarkTheme = uiState.isDarkTheme,
-                        enabled = !uiState.arScreenshotWifiPreparing,
+                        enabled = !uiState.arScreenshotWifiPreparing && !uiState.arVideoSyncInProgress,
                         onClick = onArScreenshot
                     )
                     SettingsCapsuleTextButton(
                         text = "AR录屏",
                         isDarkTheme = uiState.isDarkTheme,
+                        enabled = !uiState.arScreenshotWifiPreparing && !uiState.arVideoSyncInProgress,
                         onClick = onArScreenRecord
                     )
                 }

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/arRecordStopRoot"
+    android:layout_width="wrap_content"
+    android:layout_height="56dp"
+    android:minWidth="56dp"
+    android:background="@drawable/bg_float_ar_record_stop_circle"
+    android:clickable="false"
+    android:focusable="false"
+    android:paddingStart="10dp"
+    android:paddingEnd="10dp">
+
+    <!-- 录屏进行中：显示秒数倒计时，结束后由服务自动广播停止并收起浮窗 -->
+    <TextView
+        android:id="@+id/tvArRecordSecCountdown"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:contentDescription="@string/ar_record_stop_cd"
+        android:textColor="#FFFFFFFF"
+        android:textSize="22sp"
+        android:textStyle="bold"
+        android:visibility="visible" />
+</FrameLayout>

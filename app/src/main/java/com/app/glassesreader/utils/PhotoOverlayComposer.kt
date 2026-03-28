@@ -93,35 +93,9 @@ object PhotoOverlayComposer {
                 "(已与 EXIF 转正后的像素一致)"
         )
 
-        if (overlayText.isNotBlank()) {
-            // sp 按「contain 框」宽比例换算；boxW 已含 inset，故除以 OVERLAY_BOX_INSET_FRACTION；再乘经验微调
-            val textSizePx = (
-                textSizeSp * (boxW / OVERLAY_LOGIC_W) / OVERLAY_BOX_INSET_FRACTION *
-                    OVERLAY_TEXT_SIZE_FINE_TUNE
-            ).coerceAtLeast(8f)
-            val textPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = textColor
-                typeface = Typeface.DEFAULT
-                isSubpixelText = true
-                textSize = textSizePx
-            }
-
-            val innerWidth = boxW.toInt().coerceAtLeast(1)
-            val layout = buildStaticLayout(
-                text = overlayText,
-                paint = textPaint,
-                width = innerWidth,
-                lineSpacingMultiplier = lineSpacingMultiplier,
-                lineSpacingExtraPx = lineSpacingExtraPx
-            )
-
-            // 原点移到显示区左上角：文字仅在框内左对齐，框本身已由 centeredOverlayBox 在整图居中
-            canvas.save()
-            canvas.translate(boxLeft, boxTop)
-            canvas.clipRect(0f, 0f, boxW, boxH)
-            layout.draw(canvas)
-            canvas.restore()
-        }
+        drawOverlayTextOnCanvas(
+            canvas, w, h, overlayText, textSizeSp, lineSpacingMultiplier, lineSpacingExtraPx
+        )
 
         val base = sourceFile.name.substringBeforeLast('.')
         val outFile = File(outputDir, "${base}_overlay.jpg")
@@ -136,6 +110,66 @@ object PhotoOverlayComposer {
             return null
         }
         return outFile
+    }
+
+    /**
+     * 与 [composeAndSaveJpeg] 相同的叠字框、字号映射与 [StaticLayout] 换行（框内左对齐），画在透明 ARGB 位图上，供 AR 视频烧录。
+     */
+    fun renderOverlayArgbBitmap(
+        imageW: Int,
+        imageH: Int,
+        overlayText: String,
+        textSizeSp: Float,
+        lineSpacingMultiplier: Float = 1f,
+        lineSpacingExtraPx: Float = 0f
+    ): Bitmap? {
+        if (overlayText.isBlank() || imageW <= 0 || imageH <= 0) return null
+        val bitmap = Bitmap.createBitmap(imageW, imageH, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        drawOverlayTextOnCanvas(
+            canvas, imageW, imageH, overlayText, textSizeSp, lineSpacingMultiplier, lineSpacingExtraPx
+        )
+        return bitmap
+    }
+
+    private fun drawOverlayTextOnCanvas(
+        canvas: Canvas,
+        imageW: Int,
+        imageH: Int,
+        overlayText: String,
+        textSizeSp: Float,
+        lineSpacingMultiplier: Float,
+        lineSpacingExtraPx: Float
+    ) {
+        if (overlayText.isBlank()) return
+        val box = centeredOverlayBox(imageW, imageH)
+        val boxLeft = box.left
+        val boxTop = box.top
+        val boxW = box.width()
+        val boxH = box.height()
+        val textSizePx = (
+            textSizeSp * (boxW / OVERLAY_LOGIC_W) / OVERLAY_BOX_INSET_FRACTION *
+                OVERLAY_TEXT_SIZE_FINE_TUNE
+        ).coerceAtLeast(8f)
+        val textPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = textColor
+            typeface = Typeface.DEFAULT
+            isSubpixelText = true
+            textSize = textSizePx
+        }
+        val innerWidth = boxW.toInt().coerceAtLeast(1)
+        val layout = buildStaticLayout(
+            text = overlayText,
+            paint = textPaint,
+            width = innerWidth,
+            lineSpacingMultiplier = lineSpacingMultiplier,
+            lineSpacingExtraPx = lineSpacingExtraPx
+        )
+        canvas.save()
+        canvas.translate(boxLeft, boxTop)
+        canvas.clipRect(0f, 0f, boxW, boxH)
+        layout.draw(canvas)
+        canvas.restore()
     }
 
     /**

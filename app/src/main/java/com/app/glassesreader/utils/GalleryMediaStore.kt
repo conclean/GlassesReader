@@ -18,6 +18,9 @@ object GalleryMediaStore {
     private val albumRelativePath: String
         get() = "${Environment.DIRECTORY_PICTURES}/GlassesReader"
 
+    private val videoAlbumRelativePath: String
+        get() = "${Environment.DIRECTORY_MOVIES}/GlassesReader"
+
     /**
      * 把本地 JPEG 复制到公共相册并返回 [Uri]，失败返回 null。
      */
@@ -61,6 +64,55 @@ object GalleryMediaStore {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val done = ContentValues().apply {
                 put(MediaStore.Images.Media.IS_PENDING, 0)
+            }
+            resolver.update(uri, done, null, null)
+        }
+
+        return uri
+    }
+
+    /**
+     * 将本地 MP4 复制到系统相册（Movies/GlassesReader），失败返回 null。
+     */
+    fun insertMp4FromFile(context: Context, mp4File: File, displayName: String? = null): Uri? {
+        if (!mp4File.isFile) return null
+        val name = displayName ?: mp4File.name
+        val resolver = context.contentResolver
+
+        val contentValues = ContentValues().apply {
+            put(MediaStore.Video.Media.DISPLAY_NAME, name)
+            put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                put(MediaStore.Video.Media.RELATIVE_PATH, videoAlbumRelativePath)
+                put(MediaStore.Video.Media.IS_PENDING, 1)
+            }
+        }
+
+        val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        } else {
+            @Suppress("DEPRECATION")
+            MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+        }
+
+        val uri = resolver.insert(collection, contentValues) ?: return null
+
+        val writeOk = runCatching {
+            val stream = resolver.openOutputStream(uri) ?: return@runCatching false
+            stream.use { out ->
+                FileInputStream(mp4File).use { it.copyTo(out) }
+            }
+            true
+        }.getOrDefault(false)
+
+        if (!writeOk) {
+            runCatching { resolver.delete(uri, null, null) }
+            return null
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val done = ContentValues().apply {
+                put(MediaStore.Video.Media.IS_PENDING, 0)
             }
             resolver.update(uri, done, null, null)
         }
