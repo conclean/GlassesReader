@@ -150,6 +150,29 @@ object CxrCustomViewManager {
     }
 
     /**
+     * 与眼镜端 [updateText] 展示一致的最终文案（截断、去换行等处理选项），用于照片叠字。
+     */
+    fun computeDisplayTextForOverlay(rawText: String?): String {
+        val sanitized = sanitizeText(rawText)
+        return processText(sanitized)
+    }
+
+    /** 占位或无读屏内容时不宜叠字 */
+    fun isPlaceholderDisplayText(displayText: String): Boolean {
+        return displayText.isBlank() || displayText == DEFAULT_EMPTY_TEXT
+    }
+
+    /**
+     * 是否应在同步照片上叠字：仅当眼镜自定义页已打开且当前向用户展示的是实质读屏内容（非占位）。
+     * 否则导出干净原图，避免在「未向眼镜输出读屏」时仍把屏幕文字叠到照片上。
+     */
+    fun shouldOverlayTextOnSyncedPhoto(): Boolean {
+        if (!viewReady) return false
+        val displayText = computeDisplayTextForOverlay(latestRawText)
+        return !isPlaceholderDisplayText(displayText)
+    }
+
+    /**
      * 获取文本处理选项
      */
     fun getTextProcessingOptions(): TextProcessingOptions {

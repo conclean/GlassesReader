@@ -70,12 +70,14 @@ fun TextSizeControl(
             Slider(
                 value = textSize,
                 onValueChange = { newSize ->
-                    textSize = newSize
-                    CxrCustomViewManager.setTextSize(newSize)
+                    val rounded = newSize.roundToInt().coerceIn(12, 48).toFloat()
+                    textSize = rounded
+                    CxrCustomViewManager.setTextSize(rounded)
                     onSettingChanged()
                 },
                 valueRange = 12f..48f,
-                steps = 35, // 12-48 共 36 个值，steps = 35
+                // 12…48 共 37 个整数；Material3 Slider 的 steps = 刻度数−1，故为 36
+                steps = 36,
                 modifier = Modifier.fillMaxWidth()
             )
             Text(

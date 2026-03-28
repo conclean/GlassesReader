@@ -11,7 +11,9 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.Color
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.provider.Settings
 import android.view.View
 import android.widget.TextView
@@ -20,6 +22,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.app.glassesreader.R
 import com.app.glassesreader.accessibility.ScreenTextPublisher
+import com.app.glassesreader.overlay.ArShutterBroadcast
 import com.app.glassesreader.sdk.CxrCustomViewManager
 import com.lzf.easyfloat.EasyFloat
 import com.lzf.easyfloat.enums.ShowPattern
@@ -30,6 +33,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+
+private const val ACTION_SHOW_AR_SHUTTER = "com.app.glassesreader.action.SHOW_AR_SHUTTER"
+private const val SHUTTER_FLOAT_TAG = "ar_shutter_float"
 
 /**
  * TextOverlayService 作为前台服务，负责显示浮窗并订阅无障碍文字更新。
@@ -44,6 +50,11 @@ class TextOverlayService : Service() {
     private var toggleDisabledMessage: String? = null
     private var toggleRootView: View? = null
     private var toggleTextView: TextView? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var shutterRootView: View? = null
+    private var shutterCountdownView: TextView? = null
+    private var shutterCountingInProgress = false
+    private val shutterCountdownRunnables = mutableListOf<Runnable>()
     private val prefs by lazy { getSharedPreferences(PREF_APP_SETTINGS, Context.MODE_PRIVATE) }
 
     override fun onCreate() {
@@ -123,6 +134,12 @@ class TextOverlayService : Service() {
                 toggleDisabledMessage = intent.getStringExtra(EXTRA_TOGGLE_MESSAGE)
                 applyToggleAvailability()
             }
+
+            ACTION_SHOW_AR_SHUTTER -> {
+                cancelShutterCountdown()
+                shutterCountingInProgress = false
+                createOrShowArShutterFloat()
+            }
         }
         return START_STICKY
     }
@@ -132,6 +149,8 @@ class TextOverlayService : Service() {
         textCollectJob?.cancel()
         scope.cancel()
         EasyFloat.dismiss(TOGGLE_FLOAT_TAG, true)
+        cancelShutterCountdown()
+        runCatching { EasyFloat.dismiss(SHUTTER_FLOAT_TAG, true) }
         CxrCustomViewManager.close()
         prefs.edit().putBoolean(KEY_READER_ENABLED, false).apply()
     }
@@ -257,6 +276,61 @@ class TextOverlayService : Service() {
         }
     }
 
+    private fun cancelShutterCountdown() {
+        shutterCountdownRunnables.forEach { mainHandler.removeCallbacks(it) }
+        shutterCountdownRunnables.clear()
+    }
+
+    private fun createOrShowArShutterFloat() {
+        if (!Settings.canDrawOverlays(this)) return
+        runCatching { EasyFloat.dismiss(SHUTTER_FLOAT_TAG, true) }
+        shutterRootView = null
+        shutterCountdownView = null
+        EasyFloat.with(applicationContext)
+            .setTag(SHUTTER_FLOAT_TAG)
+            .setShowPattern(ShowPattern.ALL_TIME)
+            .setDragEnable(true)
+            .setLayout(R.layout.float_ar_shutter) { view ->
+                shutterRootView = view
+                shutterCountdownView = view.findViewById(R.id.tvShutterCountdown)
+                shutterCountdownView?.visibility = View.VISIBLE
+                view.findViewById<View>(R.id.shutterCircleRoot).setOnClickListener {
+                    if (shutterCountingInProgress) return@setOnClickListener
+                    startShutterCountdown()
+                }
+            }
+            .show()
+    }
+
+    private fun startShutterCountdown() {
+        cancelShutterCountdown()
+        shutterCountingInProgress = true
+        shutterCountdownView?.visibility = View.VISIBLE
+        shutterCountdownView?.text = "3"
+        val r1 = Runnable { shutterCountdownView?.text = "2" }
+        val r2 = Runnable { shutterCountdownView?.text = "1" }
+        val r3 = Runnable { completeShutterCountdown() }
+        shutterCountdownRunnables.addAll(listOf(r1, r2, r3))
+        mainHandler.postDelayed(r1, 1000L)
+        mainHandler.postDelayed(r2, 2000L)
+        mainHandler.postDelayed(r3, 3000L)
+    }
+
+    private fun completeShutterCountdown() {
+        cancelShutterCountdown()
+        shutterCountingInProgress = false
+        shutterCountdownView?.visibility = View.GONE
+        val textSnapshot = ScreenTextPublisher.state.value.text
+        runCatching { EasyFloat.dismiss(SHUTTER_FLOAT_TAG, true) }
+        shutterRootView = null
+        shutterCountdownView = null
+        val intent = Intent(ArShutterBroadcast.ACTION).apply {
+            setPackage(packageName)
+            putExtra(ArShutterBroadcast.EXTRA_SNAPSHOT_TEXT, textSnapshot)
+        }
+        sendBroadcast(intent)
+    }
+
     private object PendingIntentFactory {
         fun createStopIntent(context: Context): PendingIntent {
             val stopIntent = Intent(context, TextOverlayService::class.java).apply {
@@ -287,7 +361,6 @@ class TextOverlayService : Service() {
         private const val KEY_READER_ENABLED = "reader_enabled"
         private const val KEY_OVERLAY_ENABLED = "overlay_enabled"
         private const val TOGGLE_FLOAT_TAG = "toggle_float"
-
         fun start(context: Context) {
             val intent = Intent(context, TextOverlayService::class.java)
             ContextCompat.startForegroundService(context, intent)
@@ -362,6 +435,14 @@ class TextOverlayService : Service() {
         fun stop(context: Context) {
             val intent = Intent(context, TextOverlayService::class.java)
             context.stopService(intent)
+        }
+
+        /** 显示 AR 截图快门圆钮；倒计时结束后再由 [MainActivity] 发起拍照。 */
+        fun showArShutter(context: Context) {
+            val intent = Intent(context, TextOverlayService::class.java).apply {
+                action = ACTION_SHOW_AR_SHUTTER
+            }
+            ContextCompat.startForegroundService(context, intent)
         }
 
     }

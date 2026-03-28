@@ -20,6 +20,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -146,13 +147,15 @@ fun SimplePermissionItem(
     title: String,
     isCompleted: Boolean,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    clickEnabled: Boolean = true
 ) {
     Row(
         modifier = modifier
             .fillMaxWidth()
+            .alpha(if (clickEnabled) 1f else 0.55f)
             // 先设置点击，再通过 padding 控制行内文字/图标的内边距和高度
-            .clickable(onClick = onClick)
+            .clickable(enabled = clickEnabled, onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 18.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically

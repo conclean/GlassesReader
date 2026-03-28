@@ -5,10 +5,13 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -19,8 +22,14 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Divider
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -49,8 +58,16 @@ fun SettingsScreen(
     onToggleOverlay: (Boolean) -> Unit,
     onThemeChange: (Boolean) -> Unit,
     onShowMessage: (String) -> Unit,
-    onCheckUpdate: () -> Unit
+    onCheckUpdate: () -> Unit,
+    /** 标题栏「AR截图」 */
+    onArScreenshot: () -> Unit,
+    /** 标题栏「AR录屏」 */
+    onArScreenRecord: () -> Unit,
+    /** 弹窗确认后执行：见 [sdk/doc/控制与监听设备状态.md] notifyGlassReboot */
+    onConfirmRebootGlasses: () -> Unit
 ) {
+    var showRebootConfirmDialog by remember { mutableStateOf(false) }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -58,43 +75,93 @@ fun SettingsScreen(
             .padding(horizontal = 20.dp, vertical = 24.dp),
         verticalArrangement = Arrangement.spacedBy(32.dp)
     ) {
-        // 页面标题和返回按钮
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.Start,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            CustomIconButton(
-                onClick = onNavigateBack,
-                size = 56.dp,
-                containerColor = if (uiState.isDarkTheme) {
-                    DarkButtonBackground
-                } else {
-                    LightButtonBackground
-                },
-                contentColor = if (uiState.isDarkTheme) {
-                    MaterialTheme.colorScheme.onPrimary
-                } else {
-                    MaterialTheme.colorScheme.onSurface
-                }
+        // 页面标题和返回按钮；右侧胶囊文字按钮与「设置」同一行对齐；AR 截图先连 Wi‑Fi 时在整行下方显示细进度条
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(
-                    imageVector = Icons.Default.ArrowBack,
-                    contentDescription = "返回",
-                    modifier = Modifier.size(24.dp),
-                    tint = if (uiState.isDarkTheme) {
+                CustomIconButton(
+                    onClick = onNavigateBack,
+                    size = 56.dp,
+                    containerColor = if (uiState.isDarkTheme) {
+                        DarkButtonBackground
+                    } else {
+                        LightButtonBackground
+                    },
+                    contentColor = if (uiState.isDarkTheme) {
                         MaterialTheme.colorScheme.onPrimary
                     } else {
                         MaterialTheme.colorScheme.onSurface
                     }
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.ArrowBack,
+                        contentDescription = "返回",
+                        modifier = Modifier.size(24.dp),
+                        tint = if (uiState.isDarkTheme) {
+                            MaterialTheme.colorScheme.onPrimary
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        }
+                    )
+                }
+                Text(
+                    text = "设置",
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(start = 8.dp)
                 )
+                Spacer(modifier = Modifier.weight(1f))
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    SettingsCapsuleTextButton(
+                        text = "AR截图",
+                        isDarkTheme = uiState.isDarkTheme,
+                        enabled = !uiState.arScreenshotWifiPreparing,
+                        onClick = onArScreenshot
+                    )
+                    SettingsCapsuleTextButton(
+                        text = "AR录屏",
+                        isDarkTheme = uiState.isDarkTheme,
+                        onClick = onArScreenRecord
+                    )
+                }
             }
-            Text(
-                text = "设置",
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(start = 8.dp)
-            )
+            if (uiState.arScreenshotWifiPreparing) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 10.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    LinearProgressIndicator(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(2.dp),
+                        color = MaterialTheme.colorScheme.primary,
+                        trackColor = MaterialTheme.colorScheme.surfaceVariant
+                    )
+                    Row(
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "WiFi连接中",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = " ${uiState.arScreenshotWifiCountdownSec}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
         }
         
         // 权限引导部分
@@ -109,7 +176,8 @@ fun SettingsScreen(
         // 设备连接部分
         DeviceConnectionSection(
             uiState = uiState,
-            onOpenDeviceScan = onOpenDeviceScan
+            onOpenDeviceScan = onOpenDeviceScan,
+            onRebootGlassesClick = { showRebootConfirmDialog = true }
         )
 
         // 应用设置部分
@@ -121,6 +189,54 @@ fun SettingsScreen(
             onThemeChange = onThemeChange,
             onShowMessage = onShowMessage,
             onCheckUpdate = onCheckUpdate
+        )
+    }
+
+    if (showRebootConfirmDialog) {
+        AlertDialog(
+            onDismissRequest = { showRebootConfirmDialog = false },
+            title = { Text("确认重启眼镜") },
+            text = { Text("是否确认重启眼镜？重启后设备将短暂断开连接。") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showRebootConfirmDialog = false
+                        onConfirmRebootGlasses()
+                    }
+                ) {
+                    Text("确认")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRebootConfirmDialog = false }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun SettingsCapsuleTextButton(
+    text: String,
+    isDarkTheme: Boolean,
+    onClick: () -> Unit,
+    enabled: Boolean = true
+) {
+    val bg = if (isDarkTheme) DarkButtonBackground else LightButtonBackground
+    val fg =
+        if (isDarkTheme) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
+    Surface(
+        modifier = Modifier.clickable(enabled = enabled, onClick = onClick),
+        shape = RoundedCornerShape(24.dp),
+        color = bg,
+        shadowElevation = 0.dp
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelLarge,
+            color = fg.copy(alpha = if (enabled) 1f else 0.45f),
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
         )
     }
 }
@@ -215,7 +331,8 @@ private fun PermissionSetupSection(
 @Composable
 private fun DeviceConnectionSection(
     uiState: com.app.glassesreader.ui.model.MainUiState,
-    onOpenDeviceScan: () -> Unit
+    onOpenDeviceScan: () -> Unit,
+    onRebootGlassesClick: () -> Unit
 ) {
     Column(
         verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -256,13 +373,46 @@ private fun DeviceConnectionSection(
                     thickness = 0.5.dp
                 )
 
+                if (uiState.deviceAutoReconnectInProgress) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "正在尝试自动重连…",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    }
+                }
+
                 // 下半部分：复用 SimplePermissionItem，风格与权限引导完全一致
                 SimplePermissionItem(
                     title = if (uiState.glassesConnected) "眼镜已连接" else "眼镜未配对本应用",
                     // 已连接视为完成，展示灰字 + 蓝色对勾；未配对视为未完成，展示红字 + 红色箭头
                     isCompleted = uiState.glassesConnected,
-                    onClick = onOpenDeviceScan
+                    onClick = onOpenDeviceScan,
+                    clickEnabled = !uiState.deviceAutoReconnectInProgress
                 )
+                Divider(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.12f),
+                    thickness = 0.5.dp
+                )
+                TextButton(
+                    onClick = onRebootGlassesClick,
+                    enabled = uiState.glassesConnected,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                ) {
+                    Text("重启眼镜")
+                }
             }
         }
     }

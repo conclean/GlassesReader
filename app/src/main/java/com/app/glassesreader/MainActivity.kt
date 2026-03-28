@@ -10,6 +10,8 @@ import android.content.res.Configuration
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.util.Log
 import android.widget.Toast
@@ -17,12 +19,16 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.ui.Modifier
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
+import com.app.glassesreader.accessibility.ScreenTextPublisher
 import com.app.glassesreader.accessibility.service.ScreenTextService
 import com.app.glassesreader.data.TextPreset
 import com.app.glassesreader.data.TextPresetManager
@@ -37,14 +43,39 @@ import com.app.glassesreader.update.UpdateChecker
 import com.app.glassesreader.update.UpdateResult
 import com.app.glassesreader.utils.*
 import com.rokid.cxr.client.extend.CxrApi
+import com.rokid.cxr.client.extend.callbacks.PhotoPathCallback
+import com.rokid.cxr.client.extend.callbacks.SyncStatusCallback
+import com.rokid.cxr.client.extend.callbacks.WifiP2PStatusCallback
 import com.rokid.cxr.client.utils.ValueUtil
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
+
+/** AR 截图连 Wi‑Fi：单次失败后重试前间隔（毫秒），直至 60 秒倒计时结束 */
+private const val AR_SCREENSHOT_WIFI_RETRY_DELAY_MS = 1000L
 
 private const val MIN_BRIGHTNESS = 0
 private const val MAX_BRIGHTNESS = 15
 private const val DEFAULT_BRIGHTNESS = 8
+
+/** P2P 刚连上时稍后再拉文件，避免眼镜端尚未写完。 */
+private const val POST_WIFI_SYNC_DELAY_MS = 500L
+
+/** 同步失败后换参数或再试的间隔。 */
+private const val SYNC_FAILURE_RETRY_DELAY_MS = 900L
+
+/**
+ * 与 [sdk/doc/拍照录像录音.md] 白名单「4032×3024」一致：接口第一参数为高、第二参数为宽（与 Kotlin 形参名 width/height 可能不一致，以文档为准）。
+ */
+private const val PHOTO_SYNC_API_HEIGHT = 4032
+private const val PHOTO_SYNC_API_WIDTH = 3024
+private const val PHOTO_SYNC_QUALITY = 100
+
+/** false 时仅同步并导出原图，不做叠字 */
+private const val PHOTO_OVERLAY_ENABLED = true
 
 /**
  * MainActivity 用于引导用户授权并启动浮窗服务。
@@ -90,6 +121,18 @@ class MainActivity : ComponentActivity() {
     private val connectionManager = CxrConnectionManager.getInstance()
     private var glassBrightness by mutableStateOf(DEFAULT_BRIGHTNESS)
     private var brightnessSynced = false
+    private var photoSyncInProgress = false
+    private var photoSyncAttemptSeq = 0
+    private var deviceAutoReconnectInProgress by mutableStateOf(false)
+    private var arScreenshotWifiPreparing by mutableStateOf(false)
+    private var arScreenshotWifiCountdownSec by mutableStateOf(0)
+    private var showArScreenshotWifiTimeoutDialog by mutableStateOf(false)
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var deviceReconnectTimeoutRunnable: Runnable? = null
+    private var arWifiCountdownRunnable: Runnable? = null
+    private var arScreenshotWifiRetryRunnable: Runnable? = null
+    /** 每次进入「AI 截图连 Wi‑Fi」流程自增，用于丢弃旧会话回调、区分超时后的晚到 [onConnected] */
+    private var arScreenshotWifiFlowId: Int = 0
 
     private val overlayPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
@@ -119,6 +162,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        synchronized(MainActivity::class.java) { uiInstance = this }
         appPrefs = getSharedPreferences(PREF_APP_SETTINGS, Context.MODE_PRIVATE)
         appPrefs.registerOnSharedPreferenceChangeListener(prefsListener)
         overlayUIEnabled = appPrefs.getBoolean(KEY_OVERLAY_ENABLED, false)
@@ -237,13 +281,16 @@ class MainActivity : ComponentActivity() {
                         onRequestAccessibility = ::openAccessibilitySettings,
                         onRequestNotification = ::requestNotificationPermission,
                         onRequestSdkPermissions = ::requestSdkPermissions,
-                        onOpenDeviceScan = ::openDeviceScan,
+                        onOpenDeviceScan = ::onDeviceConnectionRowClick,
                         onToggleService = ::onToggleReaderRequested,
                         onOverlaySettingChange = ::onOverlaySettingChange,
                         onThemeChange = ::onThemeChange,
                         onShowMessage = ::showToast,
                         onBrightnessChange = ::onBrightnessChange,
                         onCheckUpdate = ::checkForUpdate,
+                        onPhotoSyncVerify = ::runPhotoSyncVerify,
+                        onArScreenRecord = { showToast("敬请期待") },
+                        onConfirmRebootGlasses = ::requestGlassesReboot,
                         onSettingChanged = {
                             // 实时保存到当前预设
                             if (this::presetManager.isInitialized) {
@@ -296,6 +343,33 @@ class MainActivity : ComponentActivity() {
                             )
                         }
                     }
+
+                    if (showArScreenshotWifiTimeoutDialog) {
+                        AlertDialog(
+                            onDismissRequest = { showArScreenshotWifiTimeoutDialog = false },
+                            title = { Text("Wi‑Fi 连接超时") },
+                            text = {
+                                Text(
+                                    "一分钟内未能建立 Wi‑Fi 连接。建议重启眼镜后再试，有助于恢复直连与传图。\n\n是否立即重启眼镜？"
+                                )
+                            },
+                            confirmButton = {
+                                TextButton(
+                                    onClick = {
+                                        showArScreenshotWifiTimeoutDialog = false
+                                        requestGlassesReboot()
+                                    }
+                                ) {
+                                    Text("立即重启")
+                                }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { showArScreenshotWifiTimeoutDialog = false }) {
+                                    Text("取消")
+                                }
+                            }
+                        )
+                    }
                 }
             }
         }
@@ -312,6 +386,14 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        cancelDeviceReconnectTimeout()
+        deviceAutoReconnectInProgress = false
+        arScreenshotWifiPreparing = false
+        cancelArScreenshotWifiCountdown()
+        showArScreenshotWifiTimeoutDialog = false
+        synchronized(MainActivity::class.java) {
+            if (uiInstance == this) uiInstance = null
+        }
         super.onDestroy()
         if (this::appPrefs.isInitialized) {
             appPrefs.unregisterOnSharedPreferenceChangeListener(prefsListener)
@@ -368,6 +450,95 @@ class MainActivity : ComponentActivity() {
         }
         val intent = Intent(this, DeviceScanActivity::class.java)
         deviceScanLauncher.launch(intent)
+    }
+
+    /**
+     * 设置页「设备连接」行：已连接则直接进入扫描页；未连接时若有历史连接参数则先 [CxrConnectionManager.autoReconnect]，
+     * 在区块内展示「正在尝试自动重连」，成功则仅刷新状态，失败则提示并打开扫描页。
+     */
+    private fun onDeviceConnectionRowClick() {
+        if (!sdkPermissionsGranted) {
+            Log.w(LOG_TAG, "SDK permissions not granted, cannot open device scan")
+            showToast("请先授予蓝牙等相关权限")
+            requestSdkPermissions()
+            return
+        }
+        if (glassesConnected) {
+            openDeviceScan()
+            return
+        }
+        if (deviceAutoReconnectInProgress) {
+            return
+        }
+        if (!connectionManager.hasSavedConnectionInfo()) {
+            showToast("未发现已保存的连接，将打开扫描页")
+            openDeviceScan()
+            return
+        }
+
+        cancelDeviceReconnectTimeout()
+        deviceAutoReconnectInProgress = true
+        scheduleDeviceReconnectTimeout()
+
+        val callback = object : CxrConnectionManager.ConnectionCallback {
+            override fun onConnected() {
+                runOnUiThread {
+                    cancelDeviceReconnectTimeout()
+                    deviceAutoReconnectInProgress = false
+                    checkConnectionStatus()
+                    showToast("已重新连接")
+                }
+            }
+
+            override fun onDisconnected() {
+                // 重连过程中可能出现短暂断开，不在此结束 loading，等待成功或失败回调
+            }
+
+            override fun onFailed(errorCode: ValueUtil.CxrBluetoothErrorCode?) {
+                Log.d(LOG_TAG, "Device row auto reconnect failed: $errorCode")
+                runOnUiThread {
+                    cancelDeviceReconnectTimeout()
+                    deviceAutoReconnectInProgress = false
+                    checkConnectionStatus()
+                    showToast("自动重连失败，将打开扫描页，请手动连接")
+                    openDeviceScan()
+                }
+            }
+
+            override fun onConnectionInfo(
+                socketUuid: String?,
+                macAddress: String?,
+                rokidAccount: String?,
+                glassesType: Int
+            ) {
+            }
+        }
+
+        val attempted = connectionManager.autoReconnect(callback)
+        if (!attempted && deviceAutoReconnectInProgress) {
+            // 未发起异步重连（例如 Context 为空等），且同步路径也未调用 onConnected
+            cancelDeviceReconnectTimeout()
+            deviceAutoReconnectInProgress = false
+            showToast("无法启动自动重连，将打开扫描页")
+            openDeviceScan()
+        }
+    }
+
+    private fun scheduleDeviceReconnectTimeout() {
+        cancelDeviceReconnectTimeout()
+        deviceReconnectTimeoutRunnable = Runnable {
+            if (!deviceAutoReconnectInProgress) return@Runnable
+            deviceAutoReconnectInProgress = false
+            checkConnectionStatus()
+            showToast("自动重连超时，将打开扫描页，请手动连接")
+            openDeviceScan()
+        }
+        mainHandler.postDelayed(deviceReconnectTimeoutRunnable!!, 45_000L)
+    }
+
+    private fun cancelDeviceReconnectTimeout() {
+        deviceReconnectTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+        deviceReconnectTimeoutRunnable = null
     }
 
     private fun checkConnectionStatus() {
@@ -474,6 +645,9 @@ class MainActivity : ComponentActivity() {
             permissions.add(Manifest.permission.BLUETOOTH_SCAN)
             permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
         }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            permissions.add(Manifest.permission.NEARBY_WIFI_DEVICES)
+        }
         return permissions.toTypedArray()
     }
 
@@ -567,7 +741,11 @@ class MainActivity : ComponentActivity() {
             reasons += "请开启无障碍服务"
         }
         if (!sdkPermissionsGranted) {
-            reasons += "请授权蓝牙与定位"
+            reasons += if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                "请授权蓝牙、定位与附近设备"
+            } else {
+                "请授权蓝牙与定位"
+            }
         }
         if (!glassesConnected) {
             reasons += "请连接智能眼镜"
@@ -642,6 +820,9 @@ class MainActivity : ComponentActivity() {
             customViewRunning = CxrCustomViewManager.isViewActive(),
             toggleReasons = collectMissingReasons(),
             hasSavedConnectionInfo = connectionManager.hasSavedConnectionInfo(),
+            deviceAutoReconnectInProgress = deviceAutoReconnectInProgress,
+            arScreenshotWifiPreparing = arScreenshotWifiPreparing,
+            arScreenshotWifiCountdownSec = arScreenshotWifiCountdownSec,
             isDarkTheme = isDarkTheme,
             presets = presets,
             currentPresetId = currentPresetId,
@@ -737,6 +918,482 @@ class MainActivity : ComponentActivity() {
     private fun showToast(message: String) {
         if (message.isBlank()) return
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+    }
+
+    /**
+     * 见 [sdk/doc/控制与监听设备状态.md]：`notifyGlassReboot()` 通知眼镜重启。
+     */
+    private fun requestGlassesReboot() {
+        if (!glassesConnected) {
+            showToast("请先连接智能眼镜")
+            return
+        }
+        val status = runCatching { CxrApi.getInstance().notifyGlassReboot() }.getOrNull()
+        when (status) {
+            ValueUtil.CxrStatus.REQUEST_SUCCEED -> showToast("已发送重启指令")
+            ValueUtil.CxrStatus.REQUEST_WAITING -> showToast("眼镜繁忙，请稍后再试")
+            ValueUtil.CxrStatus.REQUEST_FAILED -> showToast("重启请求失败")
+            null -> showToast("重启请求异常")
+            else -> showToast("重启：$status")
+        }
+    }
+
+    /**
+     * 见 [sdk/doc/设备连接.md]：Wi‑Fi 为高耗能模块，拍照同步流程结束后应反初始化。
+     * 下次进入同步若未连接会再次 [initWifiP2P]（未连接分支里会先 [deinitWifiP2P] 再 init）。
+     * 若实测每次断开后重连不稳定，可再改为延迟 deinit、或仅成功/失败分支调用等策略。
+     */
+    private fun deinitWifiP2PAfterPhotoSync(attemptId: Int) {
+        runCatching {
+            CxrApi.getInstance().deinitWifiP2P()
+            Log.d(LOG_TAG, "[PhotoSync#$attemptId] deinitWifiP2P (after photo sync flow)")
+        }.onFailure { e ->
+            Log.w(LOG_TAG, "[PhotoSync#$attemptId] deinitWifiP2P failed: ${e.message}")
+        }
+    }
+
+    /**
+     * 设置页「AR截图」：先建立 Wi‑Fi P2P（设置页显示细进度条），连上后再弹出圆形快门；拍照同步阶段沿用已连上的 Wi‑Fi。
+     */
+    private fun runPhotoSyncVerify() {
+        if (!glassesConnected) {
+            showToast("请先连接智能眼镜")
+            return
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.NEARBY_WIFI_DEVICES) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            Log.w(LOG_TAG, "NEARBY_WIFI_DEVICES not granted, requesting")
+            showToast("需要附近设备权限以同步图片")
+            sdkPermissionLauncher.launch(arrayOf(Manifest.permission.NEARBY_WIFI_DEVICES))
+            return
+        }
+        if (photoSyncInProgress) {
+            showToast("拍照同步进行中")
+            return
+        }
+        if (arScreenshotWifiPreparing) {
+            return
+        }
+        if (!Settings.canDrawOverlays(this)) {
+            showToast("需要悬浮窗权限：请先在系统设置中为本应用开启悬浮窗")
+            return
+        }
+        ensureWifiForArScreenshotThenShowShutter()
+    }
+
+    /**
+     * 与 [startSyncSinglePicture] 中逻辑一致：未连接时先 [deinitWifiP2P] 再 [initWifiP2P]，连上后保持至同步结束。
+     * 在 60 秒倒计时结束前，[onFailed] / [REQUEST_FAILED] 会按间隔自动重试，不弹 Toast；仅倒计时结束才提示重启眼镜。
+     * 若 60 秒已到并已弹出重启提示，但**同一会话**最后一次 [initWifiP2P] 的 [onConnected] 晚到，则关闭该弹窗并照常进入快门（见 [handleArScreenshotWifiConnected]）。
+     */
+    private fun ensureWifiForArScreenshotThenShowShutter() {
+        val api = CxrApi.getInstance()
+        val wifiReady = runCatching { api.isWifiP2PConnected() }.getOrDefault(false)
+        if (wifiReady) {
+            Log.d(LOG_TAG, "[ArScreenshot] WiFi already connected, show shutter")
+            TextOverlayService.showArShutter(this)
+            return
+        }
+
+        arScreenshotWifiFlowId += 1
+        arScreenshotWifiPreparing = true
+        startArScreenshotWifiCountdown()
+        attemptArScreenshotWifiInit()
+    }
+
+    private fun attemptArScreenshotWifiInit() {
+        if (!arScreenshotWifiPreparing || isFinishing) return
+        val flowId = arScreenshotWifiFlowId
+        val api = CxrApi.getInstance()
+        runCatching { api.deinitWifiP2P() }
+            .onFailure { Log.w(LOG_TAG, "[ArScreenshot] deinitWifiP2P: ${it.message}") }
+
+        val initStatus = api.initWifiP2P(object : WifiP2PStatusCallback {
+            override fun onConnected() {
+                Log.d(LOG_TAG, "[ArScreenshot] WiFi connected, show shutter")
+                mainHandler.post {
+                    handleArScreenshotWifiConnected(flowId)
+                }
+            }
+
+            override fun onDisconnected() {
+                Log.d(LOG_TAG, "[ArScreenshot] WiFi disconnected")
+            }
+
+            override fun onFailed(errorCode: ValueUtil.CxrWifiErrorCode?) {
+                Log.e(LOG_TAG, "[ArScreenshot] WiFi init failed: $errorCode")
+                mainHandler.post {
+                    scheduleArScreenshotWifiRetryAfterFailure("onFailed:$errorCode", flowId)
+                }
+            }
+        })
+        Log.d(LOG_TAG, "[ArScreenshot] initWifiP2P status=$initStatus")
+        if (initStatus == ValueUtil.CxrStatus.REQUEST_FAILED) {
+            mainHandler.post {
+                scheduleArScreenshotWifiRetryAfterFailure("REQUEST_FAILED", flowId)
+            }
+        }
+    }
+
+    /**
+     * [onConnected]：正常在倒计时内；若已超时则可能是最后一次尝试的回调晚到，关闭重启提示并仍进入快门。
+     */
+    private fun handleArScreenshotWifiConnected(flowId: Int) {
+        if (flowId != arScreenshotWifiFlowId) {
+            Log.d(LOG_TAG, "[ArScreenshot] onConnected ignored (stale flowId=$flowId current=$arScreenshotWifiFlowId)")
+            return
+        }
+        if (arScreenshotWifiPreparing) {
+            cancelArScreenshotWifiCountdown()
+            arScreenshotWifiPreparing = false
+            showArScreenshotWifiTimeoutDialog = false
+            if (!isFinishing) {
+                TextOverlayService.showArShutter(this)
+            }
+            return
+        }
+        if (showArScreenshotWifiTimeoutDialog) {
+            Log.d(LOG_TAG, "[ArScreenshot] onConnected after timeout (late callback), dismissing restart dialog")
+            showArScreenshotWifiTimeoutDialog = false
+            if (!isFinishing) {
+                TextOverlayService.showArShutter(this)
+            }
+            return
+        }
+        Log.d(LOG_TAG, "[ArScreenshot] onConnected ignored (session already finished, flowId=$flowId)")
+    }
+
+    /**
+     * 在倒计时未结束前自动重试；已结束或已取消则不调度。
+     */
+    private fun scheduleArScreenshotWifiRetryAfterFailure(reason: String, flowId: Int) {
+        if (flowId != arScreenshotWifiFlowId) return
+        if (!arScreenshotWifiPreparing || isFinishing) return
+        if (arScreenshotWifiCountdownSec <= 0) return
+        Log.w(LOG_TAG, "[ArScreenshot] WiFi attempt failed ($reason), retry in ${AR_SCREENSHOT_WIFI_RETRY_DELAY_MS}ms (countdown=$arScreenshotWifiCountdownSec)")
+        arScreenshotWifiRetryRunnable?.let { mainHandler.removeCallbacks(it) }
+        val r = Runnable {
+            arScreenshotWifiRetryRunnable = null
+            if (flowId != arScreenshotWifiFlowId) return@Runnable
+            if (!arScreenshotWifiPreparing || isFinishing) return@Runnable
+            if (arScreenshotWifiCountdownSec <= 0) return@Runnable
+            attemptArScreenshotWifiInit()
+        }
+        arScreenshotWifiRetryRunnable = r
+        mainHandler.postDelayed(r, AR_SCREENSHOT_WIFI_RETRY_DELAY_MS)
+    }
+
+    private fun startArScreenshotWifiCountdown() {
+        cancelArScreenshotWifiCountdown()
+        arScreenshotWifiCountdownSec = 60
+        val r = object : Runnable {
+            override fun run() {
+                if (!arScreenshotWifiPreparing) return
+                arScreenshotWifiCountdownSec -= 1
+                if (arScreenshotWifiCountdownSec <= 0) {
+                    onArScreenshotWifiTimeout()
+                    return
+                }
+                mainHandler.postDelayed(this, 1000L)
+            }
+        }
+        arWifiCountdownRunnable = r
+        mainHandler.postDelayed(r, 1000L)
+    }
+
+    private fun cancelArScreenshotWifiCountdown() {
+        arWifiCountdownRunnable?.let { mainHandler.removeCallbacks(it) }
+        arWifiCountdownRunnable = null
+        arScreenshotWifiRetryRunnable?.let { mainHandler.removeCallbacks(it) }
+        arScreenshotWifiRetryRunnable = null
+        arScreenshotWifiCountdownSec = 0
+    }
+
+    private fun onArScreenshotWifiTimeout() {
+        Log.w(LOG_TAG, "[ArScreenshot] WiFi countdown timeout (60s)")
+        cancelArScreenshotWifiCountdown()
+        arScreenshotWifiPreparing = false
+        runCatching {
+            CxrApi.getInstance().deinitWifiP2P()
+            Log.d(LOG_TAG, "[ArScreenshot] deinitWifiP2P after timeout")
+        }.onFailure { e ->
+            Log.w(LOG_TAG, "[ArScreenshot] deinitWifiP2P after timeout: ${e.message}")
+        }
+        if (!isFinishing) {
+            showArScreenshotWifiTimeoutDialog = true
+        }
+    }
+
+    /**
+     * 快门倒计时结束时调用：[overlayTextSnapshot] 为当时无障碍采集到的文字，用于叠字（避免同步完成时文字已变）。
+     */
+    private fun executePhotoSyncAfterShutter(overlayTextSnapshot: String) {
+        if (!glassesConnected) {
+            showToast("请先连接智能眼镜")
+            return
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.NEARBY_WIFI_DEVICES) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            Log.w(LOG_TAG, "NEARBY_WIFI_DEVICES not granted, requesting")
+            showToast("需要附近设备权限以同步图片")
+            sdkPermissionLauncher.launch(arrayOf(Manifest.permission.NEARBY_WIFI_DEVICES))
+            return
+        }
+        if (photoSyncInProgress) {
+            showToast("拍照同步进行中")
+            return
+        }
+
+        photoSyncInProgress = true
+        photoSyncAttemptSeq += 1
+        val attemptId = photoSyncAttemptSeq
+        val quality = PHOTO_SYNC_QUALITY
+        val h = PHOTO_SYNC_API_HEIGHT
+        val w = PHOTO_SYNC_API_WIDTH
+        Log.d(LOG_TAG, "[PhotoSync#$attemptId] open/take ${h}x${w} quality=$quality snapshotLen=${overlayTextSnapshot.length}")
+
+        val callback = object : PhotoPathCallback {
+            override fun onPhotoPath(status: ValueUtil.CxrStatus?, path: String?) {
+                Log.d(LOG_TAG, "[PhotoSync#$attemptId] onPhotoPath status=$status path=$path")
+                if (status != ValueUtil.CxrStatus.RESPONSE_SUCCEED || path.isNullOrBlank()) {
+                    photoSyncInProgress = false
+                    showToast("拍照路径回调失败")
+                    return
+                }
+                startSyncSinglePicture(attemptId, path, overlayTextSnapshot)
+            }
+        }
+
+        val openStatus = try {
+            CxrApi.getInstance().openGlassCamera(h, w, quality)
+        } catch (e: Exception) {
+            photoSyncInProgress = false
+            Log.e(LOG_TAG, "[PhotoSync#$attemptId] openGlassCamera exception: ${e.message}", e)
+            showToast("打开相机异常")
+            return
+        }
+        Log.d(LOG_TAG, "[PhotoSync#$attemptId] openGlassCamera status=$openStatus")
+        if (openStatus == ValueUtil.CxrStatus.REQUEST_FAILED) {
+            photoSyncInProgress = false
+            showToast("打开相机失败")
+            return
+        }
+
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            val requestStatus = try {
+                CxrApi.getInstance().takeGlassPhoto(h, w, quality, callback)
+            } catch (e: Exception) {
+                photoSyncInProgress = false
+                Log.e(LOG_TAG, "[PhotoSync#$attemptId] takeGlassPhoto exception: ${e.message}", e)
+                showToast("路径请求异常")
+                return@postDelayed
+            }
+
+            Log.d(LOG_TAG, "[PhotoSync#$attemptId] request status=$requestStatus")
+            if (requestStatus == ValueUtil.CxrStatus.REQUEST_FAILED) {
+                photoSyncInProgress = false
+                showToast("路径请求失败")
+            }
+        }, 400)
+    }
+
+    private fun startSyncSinglePicture(
+        attemptId: Int,
+        glassesMediaPath: String,
+        overlayTextSnapshot: String = ""
+    ) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.NEARBY_WIFI_DEVICES) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            Log.w(LOG_TAG, "[PhotoSync#$attemptId] NEARBY_WIFI_DEVICES not granted before P2P")
+            photoSyncInProgress = false
+            showToast("需要附近设备权限以同步图片")
+            sdkPermissionLauncher.launch(arrayOf(Manifest.permission.NEARBY_WIFI_DEVICES))
+            return
+        }
+        // SDK 会把 savePath 与文件名直接拼接，必须带尾部分隔符，否则得到 …/incomingimage-xxx.jpg
+        val incomingDir = File(getExternalFilesDir("photo_sync"), "incoming").apply { mkdirs() }
+        val savePath = incomingDir.absolutePath.let { p ->
+            if (p.endsWith(File.separator)) p else p + File.separator
+        }
+        val api = CxrApi.getInstance()
+        val baseName = File(glassesMediaPath).name
+        val glassesPathTrim = glassesMediaPath.trim()
+        val fullGlassesPath =
+            if (glassesPathTrim.startsWith("/") && glassesPathTrim != baseName) glassesPathTrim else null
+        val mainHandler = Handler(Looper.getMainLooper())
+        val syncFinished = AtomicBoolean(false)
+
+        fun finishSync(success: Boolean, message: String? = null) {
+            if (!syncFinished.compareAndSet(false, true)) return
+            photoSyncInProgress = false
+            deinitWifiP2PAfterPhotoSync(attemptId)
+            showToast(message ?: if (success) "拍照并同步完成" else "图片同步失败")
+        }
+
+        fun runSyncWithArg(syncArg: String, alternateArg: String?) {
+            var localSyncedPath: String? = null
+            val syncCallback = object : SyncStatusCallback {
+                override fun onSyncStart() {
+                    Log.d(LOG_TAG, "[PhotoSync#$attemptId] sync start syncArg=$syncArg")
+                }
+
+                override fun onSingleFileSynced(name: String?) {
+                    localSyncedPath = name
+                    Log.d(LOG_TAG, "[PhotoSync#$attemptId] synced file=$name savePath=$savePath")
+                }
+
+                override fun onSyncFailed() {
+                    Log.e(LOG_TAG, "[PhotoSync#$attemptId] sync failed syncArg=$syncArg")
+                    val next = alternateArg
+                    if (next != null && next != syncArg) {
+                        Log.w(LOG_TAG, "[PhotoSync#$attemptId] retry sync alternate=$next")
+                        mainHandler.postDelayed({
+                            runSyncWithArg(next, alternateArg = null)
+                        }, SYNC_FAILURE_RETRY_DELAY_MS)
+                    } else {
+                        finishSync(false)
+                    }
+                }
+
+                override fun onSyncFinished() {
+                    Log.d(LOG_TAG, "[PhotoSync#$attemptId] sync finished savePath=$savePath")
+                    CoroutineScope(Dispatchers.Main).launch {
+                        val localPath = localSyncedPath ?: File(incomingDir, baseName).absolutePath
+                        val (resultFile, galleryUri, didComposeOverlay) = withContext(Dispatchers.IO) {
+                            val f = File(localPath)
+                            if (!f.isFile) {
+                                return@withContext Triple(null, null, false)
+                            }
+                            if (!PHOTO_OVERLAY_ENABLED) {
+                                val uri = GalleryMediaStore.insertJpegFromFile(this@MainActivity, f)
+                                return@withContext Triple(f, uri, false)
+                            }
+                            if (!CxrCustomViewManager.shouldOverlayTextOnSyncedPhoto()) {
+                                Log.d(
+                                    LOG_TAG,
+                                    "[PhotoSync#$attemptId] skip text overlay (glasses not showing reader text)"
+                                )
+                                val uri = GalleryMediaStore.insertJpegFromFile(this@MainActivity, f)
+                                return@withContext Triple(f, uri, false)
+                            }
+                            val rawOverlay = overlayTextSnapshot.ifBlank {
+                                ScreenTextPublisher.state.value.text
+                            }
+                            val displayText = CxrCustomViewManager.computeDisplayTextForOverlay(
+                                rawOverlay
+                            )
+                            val textToDraw =
+                                if (CxrCustomViewManager.isPlaceholderDisplayText(displayText)) {
+                                    ""
+                                } else {
+                                    displayText
+                                }
+                            val overlay = PhotoOverlayComposer.composeAndSaveJpeg(
+                                f,
+                                File(getExternalFilesDir("photo_sync"), "overlay"),
+                                overlayText = textToDraw,
+                                textSizeSp = CxrCustomViewManager.getTextSize()
+                            )
+                            val uri = overlay?.let {
+                                GalleryMediaStore.insertJpegFromFile(this@MainActivity, it)
+                            }
+                            Triple(overlay, uri, true)
+                        }
+                        if (resultFile != null) {
+                            Log.d(LOG_TAG, "[PhotoSync#$attemptId] export source=${resultFile.absolutePath}")
+                        } else {
+                            Log.w(LOG_TAG, "[PhotoSync#$attemptId] no local file path=$localPath")
+                        }
+                        if (galleryUri != null) {
+                            Log.d(LOG_TAG, "[PhotoSync#$attemptId] gallery uri=$galleryUri")
+                        } else if (resultFile != null) {
+                            Log.w(LOG_TAG, "[PhotoSync#$attemptId] gallery insert failed")
+                        }
+                        val msg = if (didComposeOverlay) {
+                            when {
+                                resultFile != null && galleryUri != null ->
+                                    "同步完成，叠字图已加入相册「GlassesReader」"
+                                resultFile != null ->
+                                    "叠字已保存，写入相册失败（可在应用私有目录查看）"
+                                else -> "拍照已同步，叠字未生成"
+                            }
+                        } else {
+                            when {
+                                resultFile != null && galleryUri != null ->
+                                    "同步完成，原图已加入相册「GlassesReader」"
+                                resultFile != null ->
+                                    "同步完成，原图已保存，写入相册失败"
+                                else -> "拍照已同步，未取得本地文件"
+                            }
+                        }
+                        finishSync(true, msg)
+                    }
+                }
+            }
+
+            val ok = runCatching {
+                api.syncSingleFile(savePath, ValueUtil.CxrMediaType.PICTURE, syncArg, syncCallback)
+            }.getOrElse { e ->
+                Log.e(LOG_TAG, "[PhotoSync#$attemptId] syncSingleFile threw: ${e.message}", e)
+                false
+            }
+            Log.d(LOG_TAG, "[PhotoSync#$attemptId] syncSingleFile accepted=$ok syncArg=$syncArg")
+            if (!ok) {
+                val next = alternateArg
+                if (next != null && next != syncArg) {
+                    mainHandler.postDelayed({
+                        runSyncWithArg(next, alternateArg = null)
+                    }, SYNC_FAILURE_RETRY_DELAY_MS)
+                } else {
+                    finishSync(false)
+                }
+            }
+        }
+
+        val startSyncAfterReady = {
+            // 实机日志：仅传文件名会同步失败，眼镜端绝对路径可成功；优先完整路径，再回退文件名
+            if (fullGlassesPath != null) {
+                runSyncWithArg(fullGlassesPath, alternateArg = baseName)
+            } else {
+                runSyncWithArg(baseName, alternateArg = null)
+            }
+        }
+
+        val wifiReady = runCatching { api.isWifiP2PConnected() }.getOrDefault(false)
+        if (wifiReady) {
+            Log.d(LOG_TAG, "[PhotoSync#$attemptId] wifi already connected")
+            mainHandler.postDelayed(startSyncAfterReady, POST_WIFI_SYNC_DELAY_MS)
+            return
+        }
+
+        runCatching { api.deinitWifiP2P() }
+            .onFailure { Log.w(LOG_TAG, "[PhotoSync#$attemptId] deinitWifiP2P: ${it.message}") }
+
+        val initStatus = api.initWifiP2P(object : WifiP2PStatusCallback {
+            override fun onConnected() {
+                Log.d(LOG_TAG, "[PhotoSync#$attemptId] wifi connected")
+                mainHandler.postDelayed(startSyncAfterReady, POST_WIFI_SYNC_DELAY_MS)
+            }
+
+            override fun onDisconnected() {
+                Log.d(LOG_TAG, "[PhotoSync#$attemptId] wifi disconnected")
+            }
+
+            override fun onFailed(errorCode: ValueUtil.CxrWifiErrorCode?) {
+                Log.e(LOG_TAG, "[PhotoSync#$attemptId] wifi init failed error=$errorCode")
+                finishSync(false, "Wi-Fi连接失败")
+            }
+        })
+        Log.d(LOG_TAG, "[PhotoSync#$attemptId] initWifiP2P status=$initStatus")
+        if (initStatus == ValueUtil.CxrStatus.REQUEST_FAILED) {
+            finishSync(false, "Wi-Fi初始化失败")
+        }
     }
     
     private fun checkForUpdate() {
@@ -876,6 +1533,16 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         const val LOG_TAG = "MainActivity"
+
+        private var uiInstance: MainActivity? = null
+
+        fun handleArShutterBroadcast(snapshotText: String) {
+            val act = synchronized(MainActivity::class.java) { uiInstance }
+            act?.runOnUiThread {
+                act.executePhotoSyncAfterShutter(snapshotText)
+            }
+        }
+
         private const val PREF_APP_SETTINGS = "gr_app_settings"
         private const val KEY_OVERLAY_ENABLED = "overlay_enabled"
         private const val KEY_READER_ENABLED = "reader_enabled"
