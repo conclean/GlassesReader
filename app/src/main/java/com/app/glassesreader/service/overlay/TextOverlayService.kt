@@ -49,6 +49,12 @@ private const val LOG_TAG = "TextOverlayService"
 private const val SHUTTER_FLOAT_TAG = "ar_shutter_float"
 private const val AR_RECORD_STOP_TAG = "ar_record_stop_float"
 
+/** 与 [startShutterCountdown] 中 3→2→1 总时长一致 */
+private const val SHUTTER_COUNTDOWN_TOTAL_MS = 3000L
+
+/** 眼镜端显示「归零」实心圆后，再结束倒计时并触发后续逻辑（毫秒） */
+private const val AR_SHUTTER_FIRE_DISPLAY_MS = 1000L
+
 /** 与 AR 录屏时长（秒）一致：倒计时结束后自动结束录屏 */
 private const val AR_RECORD_STOP_COOLDOWN_SEC = 15
 
@@ -73,6 +79,7 @@ class TextOverlayService : Service() {
     private var shutterCountdownView: TextView? = null
     private var shutterCountingInProgress = false
     private val shutterCountdownRunnables = mutableListOf<Runnable>()
+    private var shutterCompleteAfterFireRunnable: Runnable? = null
     private var arShutterMode: ArShutterMode = ArShutterMode.SCREENSHOT
     private var arRecordStopRootView: View? = null
     private var arRecordCooldownRunnable: Runnable? = null
@@ -342,8 +349,11 @@ class TextOverlayService : Service() {
     }
 
     private fun cancelShutterCountdown() {
+        shutterCompleteAfterFireRunnable?.let { mainHandler.removeCallbacks(it) }
+        shutterCompleteAfterFireRunnable = null
         shutterCountdownRunnables.forEach { mainHandler.removeCallbacks(it) }
         shutterCountdownRunnables.clear()
+        CxrCustomViewManager.clearArScreenshotCountdownVisual()
     }
 
     /** AR 截图/录屏浮窗距屏幕左上角的边距（约 12dp） */
@@ -375,7 +385,7 @@ class TextOverlayService : Service() {
                 shutterRootView = view
                 arShutterLabelRow = view.findViewById(R.id.arShutterLabelRow)
                 shutterCountdownView = view.findViewById(R.id.tvShutterCountdown)
-                // 截图：仅「AR」；录屏：「AR」+ 红色英文句号「.」
+                // 截图：仅「AR」；录屏：「AR」+ 红色实心圆「⬤」
                 view.findViewById<TextView>(R.id.tvArSuffix).apply {
                     when (arShutterMode) {
                         ArShutterMode.SCREENSHOT -> visibility = View.GONE
@@ -402,13 +412,28 @@ class TextOverlayService : Service() {
         arShutterLabelRow?.visibility = View.GONE
         shutterCountdownView?.visibility = View.VISIBLE
         shutterCountdownView?.text = "3"
-        val r1 = Runnable { shutterCountdownView?.text = "2" }
-        val r2 = Runnable { shutterCountdownView?.text = "1" }
-        val r3 = Runnable { completeShutterCountdown() }
+        CxrCustomViewManager.setArScreenshotCountdownLines(3)
+        val r1 = Runnable {
+            shutterCountdownView?.text = "2"
+            CxrCustomViewManager.setArScreenshotCountdownLines(2)
+        }
+        val r2 = Runnable {
+            shutterCountdownView?.text = "1"
+            CxrCustomViewManager.setArScreenshotCountdownLines(1)
+        }
+        val r3 = Runnable {
+            CxrCustomViewManager.setArScreenshotCountdownFire()
+            val done = Runnable {
+                shutterCompleteAfterFireRunnable = null
+                completeShutterCountdown()
+            }
+            shutterCompleteAfterFireRunnable = done
+            mainHandler.postDelayed(done, AR_SHUTTER_FIRE_DISPLAY_MS)
+        }
         shutterCountdownRunnables.addAll(listOf(r1, r2, r3))
         mainHandler.postDelayed(r1, 1000L)
         mainHandler.postDelayed(r2, 2000L)
-        mainHandler.postDelayed(r3, 3000L)
+        mainHandler.postDelayed(r3, SHUTTER_COUNTDOWN_TOTAL_MS)
     }
 
     private fun completeShutterCountdown() {
@@ -433,6 +458,7 @@ class TextOverlayService : Service() {
                     setPackage(packageName)
                 }
                 sendBroadcast(intent)
+                CxrCustomViewManager.startArRecordingLeadBlink()
             }
         }
     }

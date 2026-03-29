@@ -1,6 +1,8 @@
 package com.app.glassesreader.sdk
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import org.json.JSONObject
 import com.rokid.cxr.client.extend.CxrApi
@@ -150,7 +152,11 @@ object CxrCustomViewManager {
     }
 
     /**
-     * 与眼镜端 [updateText] 展示一致的最终文案（截断、去换行等处理选项），用于照片叠字。
+     * 与读屏「正文」处理一致的最终文案（截断、去换行等），用于照片/视频叠字与录屏时间线。
+     *
+     * **注意**：AR 截图倒计时在眼镜上通过 [effectiveDisplayTextForArScreenshotCountdown] 仅在下发到眼镜时拼在正文前，
+     * 不改变 [latestRawText]。叠字应始终对本函数传入**无障碍采集的原文**（或快照），**不要**传入已含横线/⬤ 的整段眼镜 UI 字符串，
+     * 这样无需单独 JSON 控件即可与倒计时行隔离。
      */
     fun computeDisplayTextForOverlay(rawText: String?): String {
         val sanitized = sanitizeText(rawText)
@@ -231,12 +237,12 @@ object CxrCustomViewManager {
     }
 
     /**
-     * 构建基础布局 JSON
-     * 
+     * 构建基础布局 JSON（**日常读屏**与 [ensureInitialized] 默认打开页）。
+     *
+     * AR 截图等仅在短流程内需要的特殊 UI **不要**写在这里，否则默认阅读布局被改坏；
+     * 若要在眼镜上显示截图倒计时条，应在进入该流程时另发 [CxrApi.openCustomView] 或专用 update（与本文案分离）。
+     *
      * 参考文档：自定义页面场景.md 第6节 "初始化布局 JSON"
-     * 使用 LinearLayout 作为根布局，包含一个 TextView 用于显示文本
-     * 布局支持 LinearLayout 和 RelativeLayout
-     * 控件支持 TextView 和 ImageView
      */
     private fun buildBaseLayoutJson(): String {
         val textSizeStr = "${textSize.toInt()}sp"
@@ -277,6 +283,17 @@ object CxrCustomViewManager {
     @Volatile private var lastOpenRequestTime: Long = 0
     private const val OPEN_PROTECTION_MS = 3000L // 打开后3秒内的关闭事件将被忽略
     @Volatile
+    /** AR 截图倒计时：发往眼镜的文案前拼接横线（条数与 3→2→1 同步递减），0 表示不拼接。 */
+    private var arScreenshotCountdownLines: Int = 0
+    /** 「归零」瞬间：第一行显示实心大圆（与横线互斥）。 */
+    private var arScreenshotCountdownFire: Boolean = false
+
+    /** AR 录屏进行中：首行 ⬤/○ 每秒切换（与倒计时装饰互斥）。 */
+    private var arRecordingLeadBlinkActive: Boolean = false
+    private var arRecordingLeadBlinkPhaseOn: Boolean = true
+    private val arRecordingBlinkHandler = Handler(Looper.getMainLooper())
+    private var arRecordingBlinkRunnable: Runnable? = null
+
     private var latestText: String = DEFAULT_EMPTY_TEXT
     @Volatile
     private var latestRawText: String = DEFAULT_EMPTY_TEXT // 保存原始文本，用于重新处理
@@ -449,6 +466,9 @@ object CxrCustomViewManager {
     fun close() {
         runCatching {
             pendingText = null
+            arScreenshotCountdownLines = 0
+            arScreenshotCountdownFire = false
+            stopArRecordingLeadBlinkInternal()
             latestText = DEFAULT_EMPTY_TEXT
             latestRawText = DEFAULT_EMPTY_TEXT
             openRequested = false
@@ -463,6 +483,93 @@ object CxrCustomViewManager {
     }
 
     fun isViewActive(): Boolean = viewReady
+
+    /**
+     * AR 截图倒计时：用全角横线条数与手机 3→2→1 同步递减（3 条→2 条→1 条）。
+     * @param lineCount 1～3；0 与 [clearArScreenshotCountdownVisual] 相同。
+     */
+    fun setArScreenshotCountdownLines(lineCount: Int) {
+        stopArRecordingLeadBlinkInternal()
+        arScreenshotCountdownFire = false
+        arScreenshotCountdownLines = lineCount.coerceIn(0, 3)
+        if (!viewReady) return
+        val body = processText(sanitizeText(latestRawText))
+        sendTextToView(body)
+    }
+
+    /**
+     * 倒计时归零瞬间：第一行显示实心大圆（Unicode ⬤ BLACK LARGE CIRCLE），下一行为读屏正文。
+     */
+    fun setArScreenshotCountdownFire() {
+        stopArRecordingLeadBlinkInternal()
+        arScreenshotCountdownLines = 0
+        arScreenshotCountdownFire = true
+        if (!viewReady) return
+        val body = processText(sanitizeText(latestRawText))
+        sendTextToView(body)
+    }
+
+    /** 倒计时结束、取消或浮窗关闭时去掉前缀，按当前读屏正文重绘眼镜。 */
+    fun clearArScreenshotCountdownVisual() {
+        arScreenshotCountdownLines = 0
+        arScreenshotCountdownFire = false
+        if (!viewReady) return
+        val body = processText(sanitizeText(latestRawText))
+        sendTextToView(body)
+    }
+
+    /**
+     * AR 录屏已开始：首行保持一行符号，实心圆与空心圆每秒交替，直到 [stopArRecordingLeadBlink]。
+     */
+    fun startArRecordingLeadBlink() {
+        stopArRecordingLeadBlinkInternal()
+        arScreenshotCountdownFire = false
+        arScreenshotCountdownLines = 0
+        arRecordingLeadBlinkActive = true
+        arRecordingLeadBlinkPhaseOn = true
+        if (!viewReady) return
+        val body = processText(sanitizeText(latestRawText))
+        sendTextToView(body)
+        val r = object : Runnable {
+            override fun run() {
+                if (!arRecordingLeadBlinkActive) return
+                arRecordingLeadBlinkPhaseOn = !arRecordingLeadBlinkPhaseOn
+                if (!viewReady) return
+                sendTextToView(processText(sanitizeText(latestRawText)))
+                arRecordingBlinkHandler.postDelayed(this, AR_RECORDING_LEAD_BLINK_MS)
+            }
+        }
+        arRecordingBlinkRunnable = r
+        arRecordingBlinkHandler.postDelayed(r, AR_RECORDING_LEAD_BLINK_MS)
+    }
+
+    /** 录屏结束或开始失败时停止首行闪烁并恢复仅正文。 */
+    fun stopArRecordingLeadBlink() {
+        stopArRecordingLeadBlinkInternal()
+        if (!viewReady) return
+        sendTextToView(processText(sanitizeText(latestRawText)))
+    }
+
+    private fun stopArRecordingLeadBlinkInternal() {
+        arRecordingBlinkRunnable?.let { arRecordingBlinkHandler.removeCallbacks(it) }
+        arRecordingBlinkRunnable = null
+        arRecordingLeadBlinkActive = false
+    }
+
+    /** 仅影响发往眼镜的 [updateCustomView] 字符串，不参与 [computeDisplayTextForOverlay]。 */
+    private fun effectiveDisplayTextForArScreenshotCountdown(body: String): String {
+        if (arRecordingLeadBlinkActive) {
+            val lead = if (arRecordingLeadBlinkPhaseOn) "⬤" else "○"
+            return "$lead\n$body"
+        }
+        if (arScreenshotCountdownFire) {
+            return "⬤\n$body"
+        }
+        val n = arScreenshotCountdownLines.coerceIn(0, 3)
+        if (n <= 0) return body
+        val bar = List(n) { "－" }.joinToString(" ")
+        return "$bar\n$body"
+    }
 
     /**
      * 注册自定义页面状态监听器
@@ -558,7 +665,8 @@ object CxrCustomViewManager {
      * content 为 JSON 数组，指定操作类型、目标控件 ID 以及修改属性
      */
     private fun sendTextToView(text: String) {
-        val payload = buildUpdatePayload(text)
+        val toGlass = effectiveDisplayTextForArScreenshotCountdown(text)
+        val payload = buildUpdatePayload(toGlass)
         val status = runCatching {
             // 参考文档：自定义页面场景.md 第3节
             // updateCustomView(content) 更新已打开界面的特定控件
@@ -638,5 +746,8 @@ object CxrCustomViewManager {
             .getOrDefault(false)
 
     private const val MAX_LENGTH = 500
+
+    /** AR 录屏时首行实心/空心圆交替间隔（毫秒） */
+    private const val AR_RECORDING_LEAD_BLINK_MS = 1000L
 }
 

@@ -8,6 +8,8 @@ import android.net.Uri
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.location.LocationManager
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -794,6 +796,40 @@ class MainActivity : ComponentActivity() {
         return true
     }
 
+    /**
+     * 系统 **Wi‑Fi 射频**是否打开（与「已授权附近设备/定位权限」无关，用户可在快捷设置里关掉 Wi‑Fi）。
+     * Wi‑Fi Direct / P2P 依赖主机 Wi‑Fi 处于开启状态。
+     */
+    private fun isSystemWifiRadioEnabled(): Boolean {
+        val wm = applicationContext.getSystemService(WifiManager::class.java) ?: return false
+        @Suppress("DEPRECATION")
+        return wm.isWifiEnabled
+    }
+
+    /**
+     * 系统 **定位服务**总开关是否打开（与「已授予定位运行时权限」是两回事；权限有了但位置信息关掉时，扫描/Wi‑Fi 相关能力常不可用）。
+     */
+    private fun isSystemLocationProviderEnabled(): Boolean {
+        val lm = getSystemService(LocationManager::class.java) ?: return false
+        return lm.isLocationEnabled
+    }
+
+    /**
+     * AR 截图/录屏在建立 Wi‑Fi P2P 之前：要求手机 Wi‑Fi 与系统定位服务已开，避免长时间倒计时却无明确原因。
+     * 在 [ensureArMediaSettingsEntryOk] 之后调用。
+     */
+    private fun ensureArP2pEnvironmentOk(): Boolean {
+        if (!isSystemWifiRadioEnabled()) {
+            showToast("请先打开手机 Wi‑Fi，再使用 AR 截图 / 录屏")
+            return false
+        }
+        if (!isSystemLocationProviderEnabled()) {
+            showToast("请先打开系统「位置信息」开关（非仅应用权限），再使用 AR 截图 / 录屏")
+            return false
+        }
+        return true
+    }
+
     private fun updateReaderAvailability() {
         val reasons = collectMissingReasons()
         TextOverlayService.updateToggleAvailability(
@@ -1005,6 +1041,7 @@ class MainActivity : ComponentActivity() {
     private fun runPhotoSyncVerify() {
         pendingArWifiForRecord = false
         if (!ensureArMediaSettingsEntryOk()) return
+        if (!ensureArP2pEnvironmentOk()) return
         if (photoSyncInProgress || arVideoSyncInProgress) {
             showToast("媒体同步进行中")
             return
@@ -1021,6 +1058,10 @@ class MainActivity : ComponentActivity() {
     private fun runArScreenRecordVerify() {
         pendingArWifiForRecord = true
         if (!ensureArMediaSettingsEntryOk()) {
+            pendingArWifiForRecord = false
+            return
+        }
+        if (!ensureArP2pEnvironmentOk()) {
             pendingArWifiForRecord = false
             return
         }
@@ -1368,6 +1409,7 @@ class MainActivity : ComponentActivity() {
                                     displayText
                                 }
                             val overlay = PhotoOverlayComposer.composeAndSaveJpeg(
+                                this@MainActivity,
                                 f,
                                 File(getExternalFilesDir("photo_sync"), "overlay"),
                                 overlayText = textToDraw,
@@ -1473,6 +1515,7 @@ class MainActivity : ComponentActivity() {
         if (arRecordingActive || arVideoSyncInProgress) return
         if (!glassesConnected) {
             showToast("请先连接智能眼镜")
+            CxrCustomViewManager.stopArRecordingLeadBlink()
             return
         }
         val api = CxrApi.getInstance()
@@ -1487,6 +1530,7 @@ class MainActivity : ComponentActivity() {
         }.getOrNull()
         if (paramStatus != ValueUtil.CxrStatus.REQUEST_SUCCEED) {
             showToast("录像参数设置失败")
+            CxrCustomViewManager.stopArRecordingLeadBlink()
             return
         }
         val openStatus = runCatching {
@@ -1494,6 +1538,7 @@ class MainActivity : ComponentActivity() {
         }.getOrNull()
         if (openStatus != ValueUtil.CxrStatus.REQUEST_SUCCEED) {
             showToast("无法开始录像")
+            CxrCustomViewManager.stopArRecordingLeadBlink()
             return
         }
         val anchor = ArRecordingTimeline.captureAnchorAfterRecordRequestSucceed()
@@ -1508,6 +1553,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun finishArVideoRecording() {
+        CxrCustomViewManager.stopArRecordingLeadBlink()
         if (!arRecordingActive) return
         arRecordingActive = false
         arRecordAutoStopRunnable?.let { mainHandler.removeCallbacks(it) }
